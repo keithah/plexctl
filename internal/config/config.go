@@ -23,6 +23,7 @@ type ServerProfile struct {
 	Account           string `json:"account"`
 	Name              string `json:"name"`
 	MachineIdentifier string `json:"machine_identifier,omitempty"`
+	TokenKey          string `json:"token_key,omitempty"`
 	URL               string `json:"url"`
 	Local             bool   `json:"local,omitempty"`
 	Relay             bool   `json:"relay,omitempty"`

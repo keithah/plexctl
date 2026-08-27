@@ -105,3 +105,16 @@ func TestAccountAndServerCommandsListByDefault(t *testing.T) {
 		}
 	}
 }
+
+func TestDownloadQueueCommandsAcceptDocumentedArguments(t *testing.T) {
+	root := NewRoot()
+	for _, path := range []string{"get", "items"} {
+		cmd, _, err := root.Find([]string{"download-queues", path})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cmd.Args(cmd, []string{"1"}); err != nil {
+			t.Fatalf("download-queues %s rejected QUEUE_ID: %v", path, err)
+		}
+	}
+}

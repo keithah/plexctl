@@ -14,7 +14,7 @@ func TestAccountAndResourceDiscovery(t *testing.T) {
 		case "/api/v2/user":
 			w.Write([]byte(`{"id":7,"username":"alice","email":"alice@example.com"}`))
 		case "/api/v2/resources":
-			w.Write([]byte(`[{"name":"Living","clientIdentifier":"m1","owned":true,"connections":[{"uri":"http://living:32400","local":true,"relay":false},{"uri":"https://relay","local":false,"relay":true}]},{"name":"Office","clientIdentifier":"m2","owned":true,"connections":[{"uri":"http://office:32400","local":true}]}]`))
+			w.Write([]byte(`[{"name":"Living","clientIdentifier":"m1","accessToken":"server-token","owned":true,"connections":[{"uri":"http://living:32400","local":true,"relay":false},{"uri":"https://relay","local":false,"relay":true}]},{"name":"Office","clientIdentifier":"m2","owned":true,"connections":[{"uri":"http://office:32400","local":true}]}]`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -26,7 +26,7 @@ func TestAccountAndResourceDiscovery(t *testing.T) {
 		t.Fatalf("user=%+v err=%v", u, err)
 	}
 	r, err := c.Resources(context.Background(), "token")
-	if err != nil || len(r) != 2 || len(r[0].Connections) != 2 {
+	if err != nil || len(r) != 2 || len(r[0].Connections) != 2 || r[0].AccessToken != "server-token" {
 		t.Fatalf("resources=%+v err=%v", r, err)
 	}
 }

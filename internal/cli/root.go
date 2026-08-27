@@ -57,7 +57,11 @@ func configured(o *options) (*pms.Client, error) {
 			return nil, fmt.Errorf("server %q is not configured", name)
 		}
 		if a, ok := c.Accounts[p.Account]; ok {
-			token, e = authstore.Get(a.TokenKey)
+			key := p.TokenKey
+			if key == "" {
+				key = a.TokenKey
+			}
+			token, e = authstore.Get(key)
 		} else {
 			e = fmt.Errorf("account %q is not configured", p.Account)
 		}
@@ -196,7 +200,14 @@ func authCmd() *cobra.Command {
 			if id == "" {
 				id = fmt.Sprintf("%s-%d", name, i)
 			}
-			c.ServersV2[id] = config.ServerProfile{Account: name, Name: r.Name, MachineIdentifier: r.ClientIdentifier, URL: conn.URI, Local: conn.Local, Relay: conn.Relay}
+			tokenKey := key
+			if r.AccessToken != "" {
+				tokenKey = "server/" + name + "/" + id
+				if err := authstore.Set(tokenKey, r.AccessToken); err != nil {
+					return fmt.Errorf("store Plex server token: %w", err)
+				}
+			}
+			c.ServersV2[id] = config.ServerProfile{Account: name, Name: r.Name, MachineIdentifier: r.ClientIdentifier, TokenKey: tokenKey, URL: conn.URI, Local: conn.Local, Relay: conn.Relay}
 			if c.CurrentServer == "" {
 				c.CurrentServer = id
 			}
@@ -612,7 +623,7 @@ func queuesCmd(o *options) *cobra.Command {
 		}},
 	} {
 		s := spec
-		n := len(strings.Fields(s.use))
+		n := len(strings.Fields(s.use)) - 1
 		cmd.AddCommand(&cobra.Command{Use: s.use, Short: s.short, Args: cobra.ExactArgs(n), RunE: func(_ *cobra.Command, a []string) error {
 			c, e := configured(o)
 			if e != nil {

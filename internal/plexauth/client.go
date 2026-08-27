@@ -41,6 +41,7 @@ type User struct {
 type Resource struct {
 	Name             string       `json:"name"`
 	ClientIdentifier string       `json:"clientIdentifier"`
+	AccessToken      string       `json:"accessToken"`
 	Owned            bool         `json:"owned"`
 	Connections      []Connection `json:"connections"`
 }
