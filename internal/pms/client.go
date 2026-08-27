@@ -23,6 +23,21 @@ func (c *Client) Root(ctx context.Context) (Root, error) {
 	return v, e
 }
 func (c *Client) Info(ctx context.Context) (Root, error) { return c.Root(ctx) }
+func (c *Client) Playlists(ctx context.Context) (PlaylistContainer, error) {
+	var v PlaylistContainer
+	e := c.API.Do(ctx, "GET", "/playlists", nil, nil, &v)
+	return v, e
+}
+func (c *Client) Playlist(ctx context.Context, id string) (PlaylistContainer, error) {
+	var v PlaylistContainer
+	e := c.API.Do(ctx, "GET", "/playlists/"+url.PathEscape(id), nil, nil, &v)
+	return v, e
+}
+func (c *Client) PlaylistItems(ctx context.Context, id string) (MetadataContainer, error) {
+	var v MetadataContainer
+	e := c.API.Do(ctx, "GET", "/playlists/"+url.PathEscape(id)+"/items", nil, nil, &v)
+	return v, e
+}
 func (c *Client) Sections(ctx context.Context) (LibrarySections, error) {
 	var v LibrarySections
 	e := c.API.Do(ctx, "GET", "/library/sections/all", nil, nil, &v)

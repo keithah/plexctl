@@ -49,6 +49,21 @@ type ServerDirectory struct {
 	Title string `json:"title"`
 	Count int    `json:"count"`
 }
+type PlaylistContainer struct {
+	MediaContainer struct {
+		Size     int        `json:"size"`
+		Metadata []Playlist `json:"Metadata"`
+	} `json:"MediaContainer"`
+}
+type Playlist struct {
+	Metadata
+	Composite           string `json:"composite"`
+	LeafCount           int    `json:"leafCount"`
+	PlaylistType        string `json:"playlistType"`
+	ReadOnly            bool   `json:"readOnly"`
+	Smart               bool   `json:"smart"`
+	SpecialPlaylistType string `json:"specialPlaylistType"`
+}
 type LibrarySections struct {
 	MediaContainer struct {
 		Size      int         `json:"size"`

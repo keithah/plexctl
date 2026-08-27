@@ -34,6 +34,7 @@ in documentation. The config file is written with mode 0600.
 - `library recently-added SECTION_KEY [--limit N]` — newest items in a library.
 - `library items SECTION_KEY [--sort EXPR] [--limit N]` — browse a library page.
 - `metadata get RATING_KEY` / `metadata children RATING_KEY` — retrieve metadata.
+- `playlists list` / `playlists get PLAYLIST_ID` / `playlists items PLAYLIST_ID` — inspect playlists and their items.
 - `sessions list` — list active sessions.
 - `sessions history [--account-id ID] [--section-id ID] [--sort EXPR]` — playback history.
 - `health ping` — bounded identity liveness check.
