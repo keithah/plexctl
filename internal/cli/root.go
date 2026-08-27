@@ -158,19 +158,31 @@ func libraryCmd(o *options) *cobra.Command {
 		}
 		return e
 	}})
-	cmd.AddCommand(&cobra.Command{Use: "items SECTION_KEY", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, a []string) error {
+	var itemSort string
+	var itemLimit int
+	items := &cobra.Command{Use: "items SECTION_KEY", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, a []string) error {
 		c, e := configured(o)
 		if e != nil {
 			return e
 		}
+		q := url.Values{}
+		if itemSort != "" {
+			q.Set("sort", itemSort)
+		}
+		if itemLimit > 0 {
+			q.Set("limit", fmt.Sprint(itemLimit))
+		}
 		ctx, cancel := commandContext(o)
 		defer cancel()
-		v, e := c.Items(ctx, a[0], url.Values{})
+		v, e := c.Items(ctx, a[0], q)
 		if e == nil {
 			printValue(v, o.jsonOut)
 		}
 		return e
-	}})
+	}}
+	items.Flags().StringVar(&itemSort, "sort", "", "sort expression, for example titleSort:asc")
+	items.Flags().IntVar(&itemLimit, "limit", 0, "maximum number of items")
+	cmd.AddCommand(items)
 	search := &cobra.Command{Use: "search TERM", Short: "Search libraries via the documented hubs search endpoint", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, a []string) error {
 		c, e := configured(o)
 		if e != nil {
@@ -249,19 +261,32 @@ func sessionsCmd(o *options) *cobra.Command {
 		}
 		return e
 	}})
-	cmd.AddCommand(&cobra.Command{Use: "history", RunE: func(*cobra.Command, []string) error {
+	var accountID, viewedAt, librarySectionID, metadataItemID, sort string
+	history := &cobra.Command{Use: "history", RunE: func(*cobra.Command, []string) error {
 		c, e := configured(o)
 		if e != nil {
 			return e
 		}
+		q := url.Values{}
+		for key, value := range map[string]string{"accountID": accountID, "viewedAt": viewedAt, "librarySectionID": librarySectionID, "metadataItemID": metadataItemID, "sort": sort} {
+			if value != "" {
+				q.Set(key, value)
+			}
+		}
 		ctx, cancel := commandContext(o)
 		defer cancel()
-		v, e := c.History(ctx, url.Values{})
+		v, e := c.History(ctx, q)
 		if e == nil {
 			printValue(v, o.jsonOut)
 		}
 		return e
-	}})
+	}}
+	history.Flags().StringVar(&accountID, "account-id", "", "filter by Plex account ID")
+	history.Flags().StringVar(&viewedAt, "viewed-at", "", "filter by viewed-at timestamp")
+	history.Flags().StringVar(&librarySectionID, "section-id", "", "filter by library section ID")
+	history.Flags().StringVar(&metadataItemID, "metadata-id", "", "filter by metadata item ID")
+	history.Flags().StringVar(&sort, "sort", "", "sort expression, for example viewedAt:desc")
+	cmd.AddCommand(history)
 	return cmd
 }
 func healthCmd(o *options) *cobra.Command {

@@ -47,12 +47,24 @@ func TestLibraryQueriesAndChildren(t *testing.T) {
 	}
 }
 
+func TestSectionsUsesDocumentedAllPath(t *testing.T) {
+	c, paths, done := recorder(t, `{"MediaContainer":{"size":0,"Directory":[]}}`)
+	defer done()
+	if _, err := c.Sections(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(*paths) != 1 || (*paths)[0] != "/library/sections/all" {
+		t.Fatalf("sections path: %v", *paths)
+	}
+}
+
 // Search must use the documented /hubs/search operation rather than an
 // undocumented title= filter on the section listing endpoint.
 func TestSearchUsesDocumentedHubsSearch(t *testing.T) {
-	c, paths, done := recorder(t, `{"MediaContainer":{"size":0}}`)
+	c, paths, done := recorder(t, `{"MediaContainer":{"size":1,"Hub":[{"title":"Movies","type":"movie","Metadata":[{"title":"Star Wars"}]}]}}`)
 	defer done()
-	if _, err := c.Search(context.Background(), "3", "star wars", 5); err != nil {
+	v, err := c.Search(context.Background(), "3", "star wars", 5)
+	if err != nil {
 		t.Fatal(err)
 	}
 	got, _ := url.Parse((*paths)[0])
@@ -62,6 +74,9 @@ func TestSearchUsesDocumentedHubsSearch(t *testing.T) {
 	q := got.Query()
 	if q.Get("query") != "star wars" || q.Get("sectionId") != "3" || q.Get("limit") != "5" {
 		t.Fatalf("search query: %s", (*paths)[0])
+	}
+	if len(v.MediaContainer.Hub) != 1 || v.MediaContainer.Hub[0].Metadata[0].Title != "Star Wars" {
+		t.Fatalf("search response: %+v", v)
 	}
 }
 
@@ -75,6 +90,19 @@ func TestHistoryUsesDocumentedPath(t *testing.T) {
 	got, _ := url.Parse((*paths)[0])
 	if got.Path != "/status/sessions/history/all" {
 		t.Fatalf("history path: %s", got.Path)
+	}
+}
+
+func TestHistoryFiltersAreEncoded(t *testing.T) {
+	c, paths, done := recorder(t, `{"MediaContainer":{"size":0}}`)
+	defer done()
+	q := url.Values{"accountID": []string{"42"}, "sort": []string{"viewedAt:desc"}}
+	if _, err := c.History(context.Background(), q); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := url.Parse((*paths)[0])
+	if got.Query().Get("accountID") != "42" || got.Query().Get("sort") != "viewedAt:desc" {
+		t.Fatalf("history query: %s", (*paths)[0])
 	}
 }
 

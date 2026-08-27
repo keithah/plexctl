@@ -31,9 +31,10 @@ in documentation. The config file is written with mode 0600.
 - `library list` / `library items SECTION_KEY` — inspect libraries and media.
 - `library search TERM [--section KEY] [--limit N]` — search via `/hubs/search`.
 - `library recently-added SECTION_KEY [--limit N]` — newest items in a library.
+- `library items SECTION_KEY [--sort EXPR] [--limit N]` — browse a library page.
 - `metadata get RATING_KEY` / `metadata children RATING_KEY` — retrieve metadata.
 - `sessions list` — list active sessions.
-- `sessions history` — read playback history.
+- `sessions history [--account-id ID] [--section-id ID] [--sort EXPR]` — playback history.
 - `health ping` — bounded identity liveness check.
 - `health check` — identity plus library-access check.
 - `api GET /path` — read-only access to any PMS endpoint.

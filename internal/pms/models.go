@@ -1,5 +1,22 @@
 package pms
 
+type SearchContainer struct {
+	MediaContainer struct {
+		Size int   `json:"size"`
+		Hub  []Hub `json:"Hub"`
+	} `json:"MediaContainer"`
+}
+
+type Hub struct {
+	HubIdentifier string      `json:"hubIdentifier"`
+	Title         string      `json:"title"`
+	Type          string      `json:"type"`
+	Size          int         `json:"size"`
+	More          bool        `json:"more"`
+	Metadata      []Metadata  `json:"Metadata"`
+	Directory     []Directory `json:"Directory"`
+}
+
 type Identity struct {
 	MediaContainer IdentityContainer `json:"MediaContainer"`
 }

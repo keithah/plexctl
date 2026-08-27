@@ -17,19 +17,16 @@ func (c *Client) Identity(ctx context.Context) (Identity, error) {
 	e := c.API.Do(ctx, "GET", "/identity", nil, nil, &v)
 	return v, e
 }
-
 func (c *Client) Root(ctx context.Context) (Root, error) {
 	var v Root
 	e := c.API.Do(ctx, "GET", "/", nil, nil, &v)
 	return v, e
 }
-
 func (c *Client) Sections(ctx context.Context) (LibrarySections, error) {
 	var v LibrarySections
-	e := c.API.Do(ctx, "GET", "/library/sections", nil, nil, &v)
+	e := c.API.Do(ctx, "GET", "/library/sections/all", nil, nil, &v)
 	return v, e
 }
-
 func (c *Client) Items(ctx context.Context, key string, q url.Values) (MetadataContainer, error) {
 	var v MetadataContainer
 	e := c.API.Do(ctx, "GET", "/library/sections/"+url.PathEscape(key)+"/all", q, nil, &v)
@@ -38,7 +35,7 @@ func (c *Client) Items(ctx context.Context, key string, q url.Values) (MetadataC
 
 // Search uses the documented /hubs/search operation. sectionKey is optional;
 // when empty the search covers every library the token can see.
-func (c *Client) Search(ctx context.Context, sectionKey, term string, limit int) (MetadataContainer, error) {
+func (c *Client) Search(ctx context.Context, sectionKey, term string, limit int) (SearchContainer, error) {
 	q := url.Values{"query": []string{term}}
 	if sectionKey != "" {
 		q.Set("sectionId", sectionKey)
@@ -46,7 +43,7 @@ func (c *Client) Search(ctx context.Context, sectionKey, term string, limit int)
 	if limit > 0 {
 		q.Set("limit", strconv.Itoa(limit))
 	}
-	var v MetadataContainer
+	var v SearchContainer
 	e := c.API.Do(ctx, "GET", "/hubs/search", q, nil, &v)
 	return v, e
 }
@@ -58,22 +55,18 @@ func (c *Client) RecentlyAdded(ctx context.Context, key string, limit int) (Meta
 	}
 	return c.Items(ctx, key, q)
 }
-
 func (c *Client) Metadata(ctx context.Context, key string) (MetadataContainer, error) {
 	var v MetadataContainer
 	e := c.API.Do(ctx, "GET", "/library/metadata/"+url.PathEscape(key), nil, nil, &v)
 	return v, e
 }
 
-// Children lists the direct children of a metadata item. Plex Media Server
-// serves this route, but it is not present in the pinned OpenAPI contract, so
-// servers may answer 404 depending on version and item type.
+// Children is served by some PMS versions but is absent from the pinned OpenAPI contract.
 func (c *Client) Children(ctx context.Context, key string) (MetadataContainer, error) {
 	var v MetadataContainer
 	e := c.API.Do(ctx, "GET", "/library/metadata/"+url.PathEscape(key)+"/children", nil, nil, &v)
 	return v, e
 }
-
 func (c *Client) Sessions(ctx context.Context) (SessionContainer, error) {
 	var v SessionContainer
 	e := c.API.Do(ctx, "GET", "/status/sessions", nil, nil, &v)
