@@ -44,3 +44,21 @@ type Metadata struct {
 	Duration         int64  `json:"duration"`
 	ViewOffset       int64  `json:"viewOffset"`
 }
+type SessionContainer struct {
+	MediaContainer struct {
+		Size     int       `json:"size"`
+		Metadata []Session `json:"Metadata"`
+	} `json:"MediaContainer"`
+}
+type Session struct {
+	Session struct {
+		ID string `json:"id"`
+	} `json:"session"`
+	RatingKey        string `json:"ratingKey"`
+	Type             string `json:"type"`
+	Title            string `json:"title"`
+	GrandparentTitle string `json:"grandparentTitle"`
+	ParentTitle      string `json:"parentTitle"`
+	ViewOffset       int64  `json:"viewOffset"`
+	Duration         int64  `json:"duration"`
+}

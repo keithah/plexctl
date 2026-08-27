@@ -56,6 +56,9 @@ func configured(o *options) (*pms.Client, error) {
 	a.InsecureTLS = s.InsecureTLS
 	return pms.New(a), nil
 }
+func commandContext(o *options) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), o.timeout)
+}
 func printValue(v any, jsonOut bool) {
 	if jsonOut {
 		b, _ := json.MarshalIndent(v, "", "  ")
@@ -121,7 +124,9 @@ func serverCmd(o *options) *cobra.Command {
 		if e != nil {
 			return e
 		}
-		v, e := c.Identity(context.Background())
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		v, e := c.Identity(ctx)
 		if e == nil {
 			printValue(v, o.jsonOut)
 		}
@@ -131,12 +136,15 @@ func serverCmd(o *options) *cobra.Command {
 }
 func libraryCmd(o *options) *cobra.Command {
 	cmd := &cobra.Command{Use: "library"}
+	var limit int
 	cmd.AddCommand(&cobra.Command{Use: "list", RunE: func(*cobra.Command, []string) error {
 		c, e := configured(o)
 		if e != nil {
 			return e
 		}
-		v, e := c.Sections(context.Background())
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		v, e := c.Sections(ctx)
 		if e == nil {
 			if o.jsonOut {
 				printValue(v, o.jsonOut)
@@ -153,12 +161,42 @@ func libraryCmd(o *options) *cobra.Command {
 		if e != nil {
 			return e
 		}
-		v, e := c.Items(context.Background(), a[0], url.Values{})
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		v, e := c.Items(ctx, a[0], url.Values{})
 		if e == nil {
 			printValue(v, o.jsonOut)
 		}
 		return e
 	}})
+	cmd.AddCommand(&cobra.Command{Use: "search SECTION_KEY TERM", Args: cobra.ExactArgs(2), RunE: func(_ *cobra.Command, a []string) error {
+		c, e := configured(o)
+		if e != nil {
+			return e
+		}
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		v, e := c.Search(ctx, a[0], a[1])
+		if e == nil {
+			printValue(v, o.jsonOut)
+		}
+		return e
+	}})
+	recent := &cobra.Command{Use: "recently-added SECTION_KEY", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, a []string) error {
+		c, e := configured(o)
+		if e != nil {
+			return e
+		}
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		v, e := c.RecentlyAdded(ctx, a[0], limit)
+		if e == nil {
+			printValue(v, o.jsonOut)
+		}
+		return e
+	}}
+	recent.Flags().IntVar(&limit, "limit", 20, "maximum number of items")
+	cmd.AddCommand(recent)
 	return cmd
 }
 func metadataCmd(o *options) *cobra.Command {
@@ -168,7 +206,22 @@ func metadataCmd(o *options) *cobra.Command {
 		if e != nil {
 			return e
 		}
-		v, e := c.Metadata(context.Background(), a[0])
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		v, e := c.Metadata(ctx, a[0])
+		if e == nil {
+			printValue(v, o.jsonOut)
+		}
+		return e
+	}})
+	cmd.AddCommand(&cobra.Command{Use: "children RATING_KEY", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, a []string) error {
+		c, e := configured(o)
+		if e != nil {
+			return e
+		}
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		v, e := c.Children(ctx, a[0])
 		if e == nil {
 			printValue(v, o.jsonOut)
 		}
@@ -177,17 +230,34 @@ func metadataCmd(o *options) *cobra.Command {
 	return cmd
 }
 func sessionsCmd(o *options) *cobra.Command {
-	return &cobra.Command{Use: "sessions", RunE: func(*cobra.Command, []string) error {
+	cmd := &cobra.Command{Use: "sessions"}
+	cmd.AddCommand(&cobra.Command{Use: "list", RunE: func(*cobra.Command, []string) error {
 		c, e := configured(o)
 		if e != nil {
 			return e
 		}
-		v, e := c.Sessions(context.Background())
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		v, e := c.Sessions(ctx)
 		if e == nil {
 			printValue(v, o.jsonOut)
 		}
 		return e
-	}}
+	}})
+	cmd.AddCommand(&cobra.Command{Use: "history", RunE: func(*cobra.Command, []string) error {
+		c, e := configured(o)
+		if e != nil {
+			return e
+		}
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		v, e := c.History(ctx, url.Values{})
+		if e == nil {
+			printValue(v, o.jsonOut)
+		}
+		return e
+	}})
+	return cmd
 }
 func healthCmd(o *options) *cobra.Command {
 	cmd := &cobra.Command{Use: "health"}
@@ -234,7 +304,9 @@ func apiCmd(o *options) *cobra.Command {
 		}
 		var out any
 		_ = body
-		e = c.API.Do(context.Background(), method, a[1], url.Values{}, nil, &out)
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		e = c.API.Do(ctx, method, a[1], url.Values{}, nil, &out)
 		if e == nil {
 			printValue(out, true)
 		}
