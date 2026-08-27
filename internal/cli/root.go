@@ -26,7 +26,7 @@ func NewRoot() *cobra.Command {
 	root.PersistentFlags().StringVar(&o.server, "server", "", "configured server name")
 	root.PersistentFlags().BoolVar(&o.jsonOut, "json", false, "print JSON")
 	root.PersistentFlags().DurationVar(&o.timeout, "timeout", o.timeout, "request timeout")
-	root.AddCommand(configCmd(), serverCmd(o), libraryCmd(o), metadataCmd(o), sessionsCmd(o), playlistsCmd(o), healthCmd(o), apiCmd(o))
+	root.AddCommand(configCmd(), serverCmd(o), libraryCmd(o), metadataCmd(o), sessionsCmd(o), playlistsCmd(o), collectionsCmd(o), healthCmd(o), apiCmd(o))
 	return root
 }
 func Execute() {
@@ -323,6 +323,32 @@ func playlistsCmd(o *options) *cobra.Command {
 	}{
 		{"get PLAYLIST_ID", "Get a playlist", func(c *pms.Client, ctx context.Context, id string) (any, error) { return c.Playlist(ctx, id) }},
 		{"items PLAYLIST_ID", "List playlist items", func(c *pms.Client, ctx context.Context, id string) (any, error) { return c.PlaylistItems(ctx, id) }},
+	} {
+		s := spec
+		cmd.AddCommand(&cobra.Command{Use: s.use, Short: s.short, Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, a []string) error {
+			c, e := configured(o)
+			if e != nil {
+				return e
+			}
+			ctx, cancel := commandContext(o)
+			defer cancel()
+			v, e := s.run(c, ctx, a[0])
+			if e == nil {
+				printValue(v, o.jsonOut)
+			}
+			return e
+		}})
+	}
+	return cmd
+}
+func collectionsCmd(o *options) *cobra.Command {
+	cmd := &cobra.Command{Use: "collections"}
+	for _, spec := range []struct {
+		use, short string
+		run        func(*pms.Client, context.Context, string) (any, error)
+	}{
+		{"list SECTION_ID", "List collections in a library section", func(c *pms.Client, ctx context.Context, id string) (any, error) { return c.Collections(ctx, id) }},
+		{"items COLLECTION_ID", "List items in a collection", func(c *pms.Client, ctx context.Context, id string) (any, error) { return c.CollectionItems(ctx, id) }},
 	} {
 		s := spec
 		cmd.AddCommand(&cobra.Command{Use: s.use, Short: s.short, Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, a []string) error {

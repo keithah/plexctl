@@ -38,6 +38,16 @@ func (c *Client) PlaylistItems(ctx context.Context, id string) (MetadataContaine
 	e := c.API.Do(ctx, "GET", "/playlists/"+url.PathEscape(id)+"/items", nil, nil, &v)
 	return v, e
 }
+func (c *Client) Collections(ctx context.Context, sectionID string) (MetadataContainer, error) {
+	var v MetadataContainer
+	e := c.API.Do(ctx, "GET", "/library/sections/"+url.PathEscape(sectionID)+"/collections", nil, nil, &v)
+	return v, e
+}
+func (c *Client) CollectionItems(ctx context.Context, collectionID string) (MetadataContainer, error) {
+	var v MetadataContainer
+	e := c.API.Do(ctx, "GET", "/library/collections/"+url.PathEscape(collectionID)+"/items", nil, nil, &v)
+	return v, e
+}
 func (c *Client) Sections(ctx context.Context) (LibrarySections, error) {
 	var v LibrarySections
 	e := c.API.Do(ctx, "GET", "/library/sections/all", nil, nil, &v)

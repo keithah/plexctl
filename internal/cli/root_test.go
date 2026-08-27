@@ -18,7 +18,7 @@ func run(t *testing.T, args ...string) (string, error) {
 }
 
 func TestCommandTreeIsRegistered(t *testing.T) {
-	want := []string{"server info", "library search", "library recently-added", "metadata children", "sessions list", "sessions history", "playlists list", "playlists get", "playlists items"}
+	want := []string{"server info", "library search", "library recently-added", "metadata children", "sessions list", "sessions history", "playlists list", "playlists get", "playlists items", "collections list", "collections items"}
 	for _, path := range want {
 		parts := strings.Split(path, " ")
 		cmd, _, err := NewRoot().Find(parts)
