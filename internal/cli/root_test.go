@@ -18,7 +18,7 @@ func run(t *testing.T, args ...string) (string, error) {
 }
 
 func TestCommandTreeIsRegistered(t *testing.T) {
-	want := []string{"server info", "library search", "library recently-added", "metadata children", "sessions list", "sessions history", "playlists list", "playlists get", "playlists items", "collections list", "collections items", "download-queues get", "download-queues items", "download-queues item", "download-queues decision", "transcode decision", "transcode subtitles"}
+	want := []string{"auth login", "accounts list", "accounts use", "servers list", "servers use", "server info", "library search", "library recently-added", "metadata children", "sessions list", "sessions history", "playlists list", "playlists get", "playlists items", "collections list", "collections items", "download-queues get", "download-queues items", "download-queues item", "download-queues decision", "transcode decision", "transcode subtitles"}
 	for _, path := range want {
 		parts := strings.Split(path, " ")
 		cmd, _, err := NewRoot().Find(parts)
@@ -89,6 +89,19 @@ func TestArgumentValidation(t *testing.T) {
 	for _, args := range [][]string{{"library", "search"}, {"metadata", "children"}, {"library", "recently-added"}} {
 		if _, err := run(t, args...); err == nil {
 			t.Fatalf("%v accepted missing arguments", args)
+		}
+	}
+}
+
+func TestAccountAndServerCommandsListByDefault(t *testing.T) {
+	root := NewRoot()
+	for _, name := range []string{"accounts", "servers"} {
+		cmd, _, err := root.Find([]string{name})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cmd.RunE == nil {
+			t.Fatalf("%s should list when invoked without a subcommand", name)
 		}
 	}
 }

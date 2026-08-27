@@ -13,21 +13,27 @@ go install github.com/keithah/plexctl/cmd/plexctl@latest
 ## Configure
 
 ```bash
-export PLEX_HOME_TOKEN='your-token'
-plexctl config init
-plexctl config set home https://plex.example.com:32400 PLEX_HOME_TOKEN
-plexctl config use home
+plexctl auth login
+# Open the printed plex.tv/link URL and authorize the account.
+plexctl accounts list
+plexctl servers list
+plexctl servers use SERVER_ID
 plexctl server identity --json
-plexctl health check
 ```
 
-Tokens are read from the named environment variable at runtime and are never
-stored in the config file or printed by the CLI. Use a placeholder token only
-in documentation. The config file is written with mode 0600.
+`auth login` can be run repeatedly for multiple Plex accounts. Each account's
+token is stored in the operating system credential store; tokens are never
+stored in the config file or printed by the CLI. The config file contains
+account metadata and discovered server connections and is written with mode
+0600. The legacy environment-token configuration remains available for
+automation.
 
 ## Commands
 
 - `server info` — show server configuration and capabilities.
+- `auth login [--name NAME]` / `auth logout ACCOUNT` — add or remove a Plex account.
+- `accounts list` / `accounts use ACCOUNT` — list and select accounts.
+- `servers list` / `servers use SERVER_ID` — list and select discovered servers.
 - `server identity` — inspect the configured PMS identity.
 - `library list` / `library items SECTION_KEY` — inspect libraries and media.
 - `library search TERM [--section KEY] [--limit N]` — search via `/hubs/search`.

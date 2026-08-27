@@ -5,12 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/keithah/plexctl/internal/api"
+	"github.com/keithah/plexctl/internal/authstore"
 	"github.com/keithah/plexctl/internal/config"
 	"github.com/keithah/plexctl/internal/health"
+	"github.com/keithah/plexctl/internal/plexauth"
 	"github.com/keithah/plexctl/internal/pms"
 	"github.com/spf13/cobra"
 	"net/url"
 	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -27,7 +31,7 @@ func NewRoot() *cobra.Command {
 	root.PersistentFlags().StringVar(&o.server, "server", "", "configured server name")
 	root.PersistentFlags().BoolVar(&o.jsonOut, "json", false, "print JSON")
 	root.PersistentFlags().DurationVar(&o.timeout, "timeout", o.timeout, "request timeout")
-	root.AddCommand(configCmd(), serverCmd(o), libraryCmd(o), metadataCmd(o), sessionsCmd(o), playlistsCmd(o), collectionsCmd(o), queuesCmd(o), transcodeCmd(o), healthCmd(o), apiCmd(o))
+	root.AddCommand(configCmd(), authCmd(), accountsCmd(), serversCmd(), serverCmd(o), libraryCmd(o), metadataCmd(o), sessionsCmd(o), playlistsCmd(o), collectionsCmd(o), queuesCmd(o), transcodeCmd(o), healthCmd(o), apiCmd(o))
 	return root
 }
 func Execute() {
@@ -41,13 +45,35 @@ func configured(o *options) (*pms.Client, error) {
 	if e != nil {
 		return nil, e
 	}
-	_, s, e := c.Resolve(o.server)
-	if e != nil {
-		return nil, e
-	}
-	token := os.Getenv(s.TokenEnv)
-	if s.TokenEnv != "" && token == "" {
-		return nil, fmt.Errorf("token environment variable %q is not set", s.TokenEnv)
+	var s config.Server
+	var token string
+	if len(c.ServersV2) > 0 && (o.server != "" || c.CurrentServer != "") {
+		name := o.server
+		if name == "" {
+			name = c.CurrentServer
+		}
+		p, ok := c.ServersV2[name]
+		if !ok {
+			return nil, fmt.Errorf("server %q is not configured", name)
+		}
+		if a, ok := c.Accounts[p.Account]; ok {
+			token, e = authstore.Get(a.TokenKey)
+		} else {
+			e = fmt.Errorf("account %q is not configured", p.Account)
+		}
+		if e != nil {
+			return nil, e
+		}
+		s = config.Server{URL: p.URL}
+	} else {
+		_, s, e = c.Resolve(o.server)
+		if e != nil {
+			return nil, e
+		}
+		token = os.Getenv(s.TokenEnv)
+		if s.TokenEnv != "" && token == "" {
+			return nil, fmt.Errorf("token environment variable %q is not set", s.TokenEnv)
+		}
 	}
 	a, e := api.New(s.URL, token, nil)
 	if e != nil {
@@ -119,6 +145,208 @@ func configCmd() *cobra.Command {
 	}})
 	return cmd
 }
+
+func authCmd() *cobra.Command {
+	var accountName string
+	cmd := &cobra.Command{Use: "auth", Short: "Authenticate Plex accounts"}
+	login := &cobra.Command{Use: "login", Short: "Authenticate an account and discover its servers", RunE: func(*cobra.Command, []string) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		p := plexauth.New("https://plex.tv", "plexctl", nil)
+		p.OnPIN = func(link string) {
+			fmt.Printf("Open %s to authorize plexctl.\n", link)
+			if runtime.GOOS == "darwin" {
+				_ = exec.Command("open", link).Start()
+			}
+		}
+		result, err := p.Login(ctx)
+		if err != nil {
+			return err
+		}
+		u, err := p.User(ctx, result.Token)
+		if err != nil {
+			return err
+		}
+		name := accountName
+		if name == "" {
+			name = u.Username
+		}
+		if name == "" {
+			return fmt.Errorf("Plex account has no username; provide --name")
+		}
+		resources, err := p.Resources(ctx, result.Token)
+		if err != nil {
+			return err
+		}
+		c, err := config.Load(config.Path())
+		if err != nil {
+			return err
+		}
+		key := "account/" + name
+		if err := authstore.Set(key, result.Token); err != nil {
+			return fmt.Errorf("store Plex token: %w", err)
+		}
+		c.Accounts[name] = config.Account{Username: u.Username, Email: u.Email, PlexID: u.ID, TokenKey: key}
+		for i, r := range resources {
+			conn := bestConnection(r.Connections)
+			if conn.URI == "" {
+				continue
+			}
+			id := r.ClientIdentifier
+			if id == "" {
+				id = fmt.Sprintf("%s-%d", name, i)
+			}
+			c.ServersV2[id] = config.ServerProfile{Account: name, Name: r.Name, MachineIdentifier: r.ClientIdentifier, URL: conn.URI, Local: conn.Local, Relay: conn.Relay}
+			if c.CurrentServer == "" {
+				c.CurrentServer = id
+			}
+		}
+		if c.CurrentAccount == "" {
+			c.CurrentAccount = name
+		}
+		if err := config.Save(config.Path(), c); err != nil {
+			return err
+		}
+		fmt.Printf("Authenticated %s; discovered %d Plex servers.\n", name, len(resources))
+		return nil
+	}}
+	login.Flags().StringVar(&accountName, "name", "", "local account name (defaults to Plex username)")
+	cmd.AddCommand(login)
+	cmd.AddCommand(&cobra.Command{Use: "logout ACCOUNT", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, a []string) error {
+		c, e := config.Load(config.Path())
+		if e != nil {
+			return e
+		}
+		ac, ok := c.Accounts[a[0]]
+		if !ok {
+			return fmt.Errorf("account %q is not configured", a[0])
+		}
+		_ = authstore.Delete(ac.TokenKey)
+		delete(c.Accounts, a[0])
+		for id, s := range c.ServersV2 {
+			if s.Account == a[0] {
+				delete(c.ServersV2, id)
+			}
+		}
+		if c.CurrentAccount == a[0] {
+			c.CurrentAccount = ""
+			c.CurrentServer = ""
+		}
+		return config.Save(config.Path(), c)
+	}})
+	return cmd
+}
+func bestConnection(conns []plexauth.Connection) plexauth.Connection {
+	for _, c := range conns {
+		if c.Local && !c.Relay {
+			return c
+		}
+	}
+	for _, c := range conns {
+		if !c.Relay {
+			return c
+		}
+	}
+	if len(conns) > 0 {
+		return conns[0]
+	}
+	return plexauth.Connection{}
+}
+func accountsCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "accounts", Short: "List and select authenticated Plex accounts"}
+	cmd.RunE = func(*cobra.Command, []string) error {
+		c, e := config.Load(config.Path())
+		if e != nil {
+			return e
+		}
+		for n, a := range c.Accounts {
+			mark := ""
+			if n == c.CurrentAccount {
+				mark = " *"
+			}
+			fmt.Printf("%s	%s%s\n", n, a.Email, mark)
+		}
+		return nil
+	}
+	cmd.AddCommand(&cobra.Command{Use: "list", RunE: func(*cobra.Command, []string) error {
+		c, e := config.Load(config.Path())
+		if e != nil {
+			return e
+		}
+		for n, a := range c.Accounts {
+			mark := ""
+			if n == c.CurrentAccount {
+				mark = " *"
+			}
+			fmt.Printf("%s\t%s%s\n", n, a.Email, mark)
+		}
+		return nil
+	}})
+	cmd.AddCommand(&cobra.Command{Use: "use ACCOUNT", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, a []string) error {
+		c, e := config.Load(config.Path())
+		if e != nil {
+			return e
+		}
+		if _, ok := c.Accounts[a[0]]; !ok {
+			return fmt.Errorf("account %q is not configured", a[0])
+		}
+		c.CurrentAccount = a[0]
+		for id, s := range c.ServersV2 {
+			if s.Account == a[0] {
+				c.CurrentServer = id
+				break
+			}
+		}
+		return config.Save(config.Path(), c)
+	}})
+	return cmd
+}
+func serversCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "servers", Short: "List and select discovered Plex servers"}
+	cmd.RunE = func(*cobra.Command, []string) error {
+		c, e := config.Load(config.Path())
+		if e != nil {
+			return e
+		}
+		for id, s := range c.ServersV2 {
+			mark := ""
+			if id == c.CurrentServer {
+				mark = " *"
+			}
+			fmt.Printf("%s	%s	%s	account=%s%s\n", id, s.Name, s.URL, s.Account, mark)
+		}
+		return nil
+	}
+	cmd.AddCommand(&cobra.Command{Use: "list", RunE: func(*cobra.Command, []string) error {
+		c, e := config.Load(config.Path())
+		if e != nil {
+			return e
+		}
+		for id, s := range c.ServersV2 {
+			mark := ""
+			if id == c.CurrentServer {
+				mark = " *"
+			}
+			fmt.Printf("%s\t%s\t%s\taccount=%s%s\n", id, s.Name, s.URL, s.Account, mark)
+		}
+		return nil
+	}})
+	cmd.AddCommand(&cobra.Command{Use: "use SERVER", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, a []string) error {
+		c, e := config.Load(config.Path())
+		if e != nil {
+			return e
+		}
+		s, ok := c.ServersV2[a[0]]
+		if !ok {
+			return fmt.Errorf("server %q is not configured", a[0])
+		}
+		c.CurrentServer = a[0]
+		c.CurrentAccount = s.Account
+		return config.Save(config.Path(), c)
+	}})
+	return cmd
+}
+
 func serverCmd(o *options) *cobra.Command {
 	cmd := &cobra.Command{Use: "server"}
 	cmd.AddCommand(&cobra.Command{Use: "info", Short: "Show server configuration and capabilities", RunE: func(*cobra.Command, []string) error {

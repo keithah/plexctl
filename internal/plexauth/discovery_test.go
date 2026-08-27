@@ -1,0 +1,32 @@
+package plexauth
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func TestAccountAndResourceDiscovery(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v2/user":
+			w.Write([]byte(`{"id":7,"username":"alice","email":"alice@example.com"}`))
+		case "/api/v2/resources":
+			w.Write([]byte(`[{"name":"Living","clientIdentifier":"m1","owned":true,"connections":[{"uri":"http://living:32400","local":true,"relay":false},{"uri":"https://relay","local":false,"relay":true}]},{"name":"Office","clientIdentifier":"m2","owned":true,"connections":[{"uri":"http://office:32400","local":true}]}]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer s.Close()
+	c := New(s.URL, "test", &http.Client{})
+	u, err := c.User(context.Background(), "token")
+	if err != nil || u.ID != 7 {
+		t.Fatalf("user=%+v err=%v", u, err)
+	}
+	r, err := c.Resources(context.Background(), "token")
+	if err != nil || len(r) != 2 || len(r[0].Connections) != 2 {
+		t.Fatalf("resources=%+v err=%v", r, err)
+	}
+}
