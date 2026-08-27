@@ -112,3 +112,27 @@ type Session struct {
 	ViewOffset       int64  `json:"viewOffset"`
 	Duration         int64  `json:"duration"`
 }
+
+type DownloadQueueContainer struct {
+	MediaContainer struct {
+		Size          int                 `json:"size"`
+		DownloadQueue []DownloadQueue     `json:"DownloadQueue"`
+		Items         []DownloadQueueItem `json:"DownloadQueueItem"`
+	} `json:"MediaContainer"`
+}
+type DownloadQueue struct {
+	ID        int    `json:"id"`
+	ItemCount int    `json:"itemCount"`
+	Status    string `json:"status"`
+}
+type DownloadQueueItem struct {
+	ID               int            `json:"id"`
+	Status           string         `json:"status"`
+	Title            string         `json:"title"`
+	RatingKey        string         `json:"ratingKey"`
+	DecisionResult   map[string]any `json:"DecisionResult"`
+	TranscodeSession map[string]any `json:"TranscodeSession"`
+}
+type TranscodeContainer struct {
+	MediaContainer map[string]any `json:"MediaContainer"`
+}

@@ -105,3 +105,42 @@ func (c *Client) History(ctx context.Context, q url.Values) (MetadataContainer, 
 	e := c.API.Do(ctx, "GET", "/status/sessions/history/all", q, nil, &v)
 	return v, e
 }
+func (c *Client) DownloadQueue(ctx context.Context, id string) (DownloadQueueContainer, error) {
+	var v DownloadQueueContainer
+	e := c.API.Do(ctx, "GET", "/downloadQueue/"+url.PathEscape(id), nil, nil, &v)
+	return v, e
+}
+func (c *Client) DownloadQueueItems(ctx context.Context, id string) (DownloadQueueContainer, error) {
+	var v DownloadQueueContainer
+	e := c.API.Do(ctx, "GET", "/downloadQueue/"+url.PathEscape(id)+"/items", nil, nil, &v)
+	return v, e
+}
+func (c *Client) DownloadQueueItem(ctx context.Context, queueID, itemID string) (DownloadQueueContainer, error) {
+	var v DownloadQueueContainer
+	e := c.API.Do(ctx, "GET", "/downloadQueue/"+url.PathEscape(queueID)+"/items/"+url.PathEscape(itemID), nil, nil, &v)
+	return v, e
+}
+func (c *Client) DownloadQueueDecision(ctx context.Context, queueID, itemID string) (TranscodeContainer, error) {
+	var v TranscodeContainer
+	e := c.API.Do(ctx, "GET", "/downloadQueue/"+url.PathEscape(queueID)+"/item/"+url.PathEscape(itemID)+"/decision", nil, nil, &v)
+	return v, e
+}
+func (c *Client) TranscodeDecision(ctx context.Context, transcodeType, sessionID string, q url.Values) (TranscodeContainer, error) {
+	var v TranscodeContainer
+	q = cloneValues(q)
+	q.Set("transcodeSessionId", sessionID)
+	e := c.API.Do(ctx, "GET", "/"+url.PathEscape(transcodeType)+"/:/transcode/universal/decision", q, nil, &v)
+	return v, e
+}
+func (c *Client) TranscodeSubtitles(ctx context.Context, transcodeType, sessionID string, q url.Values) error {
+	q = cloneValues(q)
+	q.Set("transcodeSessionId", sessionID)
+	return c.API.Do(ctx, "GET", "/"+url.PathEscape(transcodeType)+"/:/transcode/universal/subtitles", q, nil, nil)
+}
+func cloneValues(in url.Values) url.Values {
+	out := url.Values{}
+	for k, vs := range in {
+		out[k] = append([]string(nil), vs...)
+	}
+	return out
+}

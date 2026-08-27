@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -26,7 +27,7 @@ func NewRoot() *cobra.Command {
 	root.PersistentFlags().StringVar(&o.server, "server", "", "configured server name")
 	root.PersistentFlags().BoolVar(&o.jsonOut, "json", false, "print JSON")
 	root.PersistentFlags().DurationVar(&o.timeout, "timeout", o.timeout, "request timeout")
-	root.AddCommand(configCmd(), serverCmd(o), libraryCmd(o), metadataCmd(o), sessionsCmd(o), playlistsCmd(o), collectionsCmd(o), healthCmd(o), apiCmd(o))
+	root.AddCommand(configCmd(), serverCmd(o), libraryCmd(o), metadataCmd(o), sessionsCmd(o), playlistsCmd(o), collectionsCmd(o), queuesCmd(o), transcodeCmd(o), healthCmd(o), apiCmd(o))
 	return root
 }
 func Execute() {
@@ -364,6 +365,73 @@ func collectionsCmd(o *options) *cobra.Command {
 			}
 			return e
 		}})
+	}
+	return cmd
+}
+func queuesCmd(o *options) *cobra.Command {
+	cmd := &cobra.Command{Use: "download-queues"}
+	for _, spec := range []struct {
+		use, short string
+		run        func(*pms.Client, context.Context, []string) (any, error)
+	}{
+		{"get QUEUE_ID", "Get a download queue", func(c *pms.Client, x context.Context, a []string) (any, error) { return c.DownloadQueue(x, a[0]) }},
+		{"items QUEUE_ID", "List download queue items", func(c *pms.Client, x context.Context, a []string) (any, error) { return c.DownloadQueueItems(x, a[0]) }},
+		{"item QUEUE_ID ITEM_ID", "Get one download queue item", func(c *pms.Client, x context.Context, a []string) (any, error) {
+			return c.DownloadQueueItem(x, a[0], a[1])
+		}},
+		{"decision QUEUE_ID ITEM_ID", "Get a queue item decision", func(c *pms.Client, x context.Context, a []string) (any, error) {
+			return c.DownloadQueueDecision(x, a[0], a[1])
+		}},
+	} {
+		s := spec
+		n := len(strings.Fields(s.use))
+		cmd.AddCommand(&cobra.Command{Use: s.use, Short: s.short, Args: cobra.ExactArgs(n), RunE: func(_ *cobra.Command, a []string) error {
+			c, e := configured(o)
+			if e != nil {
+				return e
+			}
+			x, cancel := commandContext(o)
+			defer cancel()
+			v, e := s.run(c, x, a)
+			if e == nil {
+				printValue(v, o.jsonOut)
+			}
+			return e
+		}})
+	}
+	return cmd
+}
+func transcodeCmd(o *options) *cobra.Command {
+	cmd := &cobra.Command{Use: "transcode"}
+	var params []string
+	for _, name := range []string{"decision", "subtitles"} {
+		n := name
+		c := &cobra.Command{Use: n + " TYPE SESSION_ID", Short: "Read universal transcode " + n, Args: cobra.ExactArgs(2), RunE: func(_ *cobra.Command, a []string) error {
+			q := url.Values{}
+			for _, p := range params {
+				k, v, ok := strings.Cut(p, "=")
+				if !ok || k == "" {
+					return fmt.Errorf("parameter must be key=value: %q", p)
+				}
+				q.Add(k, v)
+			}
+			client, e := configured(o)
+			if e != nil {
+				return e
+			}
+			x, cancel := commandContext(o)
+			defer cancel()
+			if n == "decision" {
+				v, e := client.TranscodeDecision(x, a[0], a[1], q)
+				if e == nil {
+					printValue(v, o.jsonOut)
+				}
+				return e
+			}
+			return client.TranscodeSubtitles(x, a[0], a[1], q)
+		}}
+		c.Flags().StringArrayVar(&params, "param", nil, "transcode query parameter key=value (repeatable)")
+		cmd.AddCommand(c)
 	}
 	return cmd
 }
