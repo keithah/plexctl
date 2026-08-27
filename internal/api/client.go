@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -32,6 +33,31 @@ func New(base, token string, hc *http.Client) (*Client, error) {
 		hc = &http.Client{Timeout: 30 * time.Second}
 	}
 	return &Client{BaseURL: u, Token: token, HTTP: hc, ClientID: "plexctl", APIVersion: "1"}, nil
+}
+
+// SetInsecureTLS enables or disables certificate verification for this client.
+// Verification is on by default; callers must opt out explicitly.
+func (c *Client) SetInsecureTLS(insecure bool) {
+	c.InsecureTLS = insecure
+	if c.HTTP == nil {
+		c.HTTP = &http.Client{Timeout: 30 * time.Second}
+	}
+	tr, ok := c.HTTP.Transport.(*http.Transport)
+	if !ok || tr == nil {
+		base, _ := http.DefaultTransport.(*http.Transport)
+		if base != nil {
+			tr = base.Clone()
+		} else {
+			tr = &http.Transport{}
+		}
+	}
+	if tr.TLSClientConfig == nil {
+		tr.TLSClientConfig = &tls.Config{}
+	} else {
+		tr.TLSClientConfig = tr.TLSClientConfig.Clone()
+	}
+	tr.TLSClientConfig.InsecureSkipVerify = insecure
+	c.HTTP.Transport = tr
 }
 func (c *Client) Do(ctx context.Context, method, path string, query url.Values, body io.Reader, out any) error {
 	if path == "" || !strings.HasPrefix(path, "/") {

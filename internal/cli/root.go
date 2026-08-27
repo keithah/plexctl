@@ -11,7 +11,6 @@ import (
 	"github.com/spf13/cobra"
 	"net/url"
 	"os"
-	"strconv"
 	"time"
 )
 
@@ -53,7 +52,9 @@ func configured(o *options) (*pms.Client, error) {
 	if e != nil {
 		return nil, e
 	}
-	a.InsecureTLS = s.InsecureTLS
+	if s.InsecureTLS {
+		a.SetInsecureTLS(true)
+	}
 	return pms.New(a), nil
 }
 func commandContext(o *options) (context.Context, context.CancelFunc) {
@@ -136,7 +137,8 @@ func serverCmd(o *options) *cobra.Command {
 }
 func libraryCmd(o *options) *cobra.Command {
 	cmd := &cobra.Command{Use: "library"}
-	var limit int
+	var searchLimit, recentLimit int
+	var section string
 	cmd.AddCommand(&cobra.Command{Use: "list", RunE: func(*cobra.Command, []string) error {
 		c, e := configured(o)
 		if e != nil {
@@ -169,19 +171,22 @@ func libraryCmd(o *options) *cobra.Command {
 		}
 		return e
 	}})
-	cmd.AddCommand(&cobra.Command{Use: "search SECTION_KEY TERM", Args: cobra.ExactArgs(2), RunE: func(_ *cobra.Command, a []string) error {
+	search := &cobra.Command{Use: "search TERM", Short: "Search libraries via the documented hubs search endpoint", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, a []string) error {
 		c, e := configured(o)
 		if e != nil {
 			return e
 		}
 		ctx, cancel := commandContext(o)
 		defer cancel()
-		v, e := c.Search(ctx, a[0], a[1])
+		v, e := c.Search(ctx, section, a[0], searchLimit)
 		if e == nil {
 			printValue(v, o.jsonOut)
 		}
 		return e
-	}})
+	}}
+	search.Flags().StringVar(&section, "section", "", "restrict the search to one library section key")
+	search.Flags().IntVar(&searchLimit, "limit", 20, "maximum number of items")
+	cmd.AddCommand(search)
 	recent := &cobra.Command{Use: "recently-added SECTION_KEY", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, a []string) error {
 		c, e := configured(o)
 		if e != nil {
@@ -189,13 +194,13 @@ func libraryCmd(o *options) *cobra.Command {
 		}
 		ctx, cancel := commandContext(o)
 		defer cancel()
-		v, e := c.RecentlyAdded(ctx, a[0], limit)
+		v, e := c.RecentlyAdded(ctx, a[0], recentLimit)
 		if e == nil {
 			printValue(v, o.jsonOut)
 		}
 		return e
 	}}
-	recent.Flags().IntVar(&limit, "limit", 20, "maximum number of items")
+	recent.Flags().IntVar(&recentLimit, "limit", 20, "maximum number of items")
 	cmd.AddCommand(recent)
 	return cmd
 }
@@ -292,7 +297,6 @@ func healthCmd(o *options) *cobra.Command {
 	return cmd
 }
 func apiCmd(o *options) *cobra.Command {
-	var body string
 	cmd := &cobra.Command{Use: "api METHOD PATH", Args: cobra.ExactArgs(2), RunE: func(_ *cobra.Command, a []string) error {
 		method := a[0]
 		if method != "GET" && method != "HEAD" {
@@ -303,7 +307,6 @@ func apiCmd(o *options) *cobra.Command {
 			return e
 		}
 		var out any
-		_ = body
 		ctx, cancel := commandContext(o)
 		defer cancel()
 		e = c.API.Do(ctx, method, a[1], url.Values{}, nil, &out)
@@ -312,8 +315,5 @@ func apiCmd(o *options) *cobra.Command {
 		}
 		return e
 	}}
-	cmd.Flags().StringVar(&body, "body-json", "", "JSON body (reserved for future guarded mutations)")
 	return cmd
 }
-
-var _ = strconv.Itoa

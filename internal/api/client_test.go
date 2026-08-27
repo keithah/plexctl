@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -31,6 +32,7 @@ func TestClientHeadersAndJSON(t *testing.T) {
 		t.Fatal(v)
 	}
 }
+
 func TestHTTPErrorDoesNotExposeToken(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(401)
@@ -42,4 +44,37 @@ func TestHTTPErrorDoesNotExposeToken(t *testing.T) {
 	if e == nil || strings.Contains(e.Error(), "secret") {
 		t.Fatalf("unsafe error: %v", e)
 	}
+}
+
+// A self-signed TLS server must fail by default and succeed only when the
+// caller explicitly opts out of verification.
+func TestInsecureTLSIsHonored(t *testing.T) {
+	s := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer s.Close()
+
+	strict, err := New(s.URL, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = strict.Do(context.Background(), "GET", "/identity", nil, nil, nil); err == nil {
+		t.Fatal("expected certificate verification failure with strict TLS")
+	}
+
+	relaxed, err := New(s.URL, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relaxed.SetInsecureTLS(true)
+	if err = relaxed.Do(context.Background(), "GET", "/identity", nil, nil, nil); err != nil {
+		t.Fatalf("expected success with insecure TLS enabled: %v", err)
+	}
+
+	tr, ok := relaxed.HTTP.Transport.(*http.Transport)
+	if !ok || tr.TLSClientConfig == nil || !tr.TLSClientConfig.InsecureSkipVerify {
+		t.Fatalf("transport did not carry InsecureSkipVerify: %#v", relaxed.HTTP.Transport)
+	}
+	var _ = tls.Config{}
 }

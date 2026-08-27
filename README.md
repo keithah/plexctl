@@ -29,15 +29,21 @@ in documentation. The config file is written with mode 0600.
 
 - `server identity` — inspect the configured PMS identity.
 - `library list` / `library items SECTION_KEY` — inspect libraries and media.
-- `metadata get RATING_KEY` — retrieve metadata.
-- `sessions` — list active sessions.
+- `library search TERM [--section KEY] [--limit N]` — search via `/hubs/search`.
+- `library recently-added SECTION_KEY [--limit N]` — newest items in a library.
+- `metadata get RATING_KEY` / `metadata children RATING_KEY` — retrieve metadata.
+- `sessions list` — list active sessions.
+- `sessions history` — read playback history.
 - `health ping` — bounded identity liveness check.
 - `health check` — identity plus library-access check.
 - `api GET /path` — read-only access to any PMS endpoint.
 
-Read commands accept `--json`, `--server`, and `--timeout`. Raw API mutations
-are intentionally rejected until a typed command with an explicit confirmation
-gate exists.
+Read commands accept `--json`, `--server`, and `--timeout`, and every request
+honors the configured timeout. Raw API mutations are intentionally rejected
+until a typed command with an explicit confirmation gate exists.
+
+`metadata children` targets a route Plex Media Server serves but that is absent
+from the pinned contract, so some servers and item types answer 404.
 
 ## API contract
 
