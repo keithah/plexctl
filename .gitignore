@@ -1,0 +1,8 @@
+# Binaries
+/plexctl
+/bin/
+
+# Local credentials/config
+.env
+.DS_Store
+coverage.out
