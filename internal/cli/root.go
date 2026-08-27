@@ -68,7 +68,7 @@ func configured(o *options) (*pms.Client, error) {
 		if e != nil {
 			return nil, e
 		}
-		s = config.Server{URL: p.URL}
+		s = config.Server{URL: p.URL, InsecureTLS: p.InsecureTLS}
 	} else {
 		_, s, e = c.Resolve(o.server)
 		if e != nil {
@@ -192,7 +192,7 @@ func authCmd() *cobra.Command {
 		}
 		c.Accounts[name] = config.Account{Username: u.Username, Email: u.Email, PlexID: u.ID, TokenKey: key}
 		for i, r := range resources {
-			conn := bestConnection(r.Connections)
+			conn := validatedConnection(ctx, r, result.Token)
 			if conn.URI == "" {
 				continue
 			}
@@ -207,7 +207,8 @@ func authCmd() *cobra.Command {
 					return fmt.Errorf("store Plex server token: %w", err)
 				}
 			}
-			c.ServersV2[id] = config.ServerProfile{Account: name, Name: r.Name, MachineIdentifier: r.ClientIdentifier, TokenKey: tokenKey, URL: conn.URI, Local: conn.Local, Relay: conn.Relay}
+			normalized := normalizeDiscoveredConnection(conn)
+			c.ServersV2[id] = config.ServerProfile{Account: name, Name: r.Name, MachineIdentifier: r.ClientIdentifier, TokenKey: tokenKey, URL: normalized.URL, InsecureTLS: normalized.InsecureTLS, Local: conn.Local, Relay: conn.Relay}
 			if c.CurrentServer == "" {
 				c.CurrentServer = id
 			}
@@ -247,7 +248,61 @@ func authCmd() *cobra.Command {
 	}})
 	return cmd
 }
+
+type normalizedConnection struct {
+	URL         string
+	InsecureTLS bool
+}
+
+func normalizeDiscoveredConnection(conn plexauth.Connection) normalizedConnection {
+	url := conn.URI
+	insecureTLS := false
+	if !conn.Local && !conn.Relay && strings.HasPrefix(url, "http://") {
+		url = "https://" + strings.TrimPrefix(url, "http://")
+		insecureTLS = true
+	}
+	return normalizedConnection{URL: url, InsecureTLS: insecureTLS}
+}
+
+func validatedConnection(ctx context.Context, resource plexauth.Resource, accountToken string) plexauth.Connection {
+	candidates := append([]plexauth.Connection(nil), resource.Connections...)
+	// Preserve the normal preference order while retaining relay as a fallback.
+	preferred := bestConnection(candidates)
+	ordered := []plexauth.Connection{preferred}
+	for _, candidate := range candidates {
+		if candidate.URI == preferred.URI {
+			continue
+		}
+		ordered = append(ordered, candidate)
+	}
+	token := resource.AccessToken
+	if token == "" {
+		token = accountToken
+	}
+	for _, candidate := range ordered {
+		normalized := normalizeDiscoveredConnection(candidate)
+		a, err := api.New(normalized.URL, token, nil)
+		if err != nil {
+			continue
+		}
+		a.SetInsecureTLS(normalized.InsecureTLS)
+		if identity, err := pms.New(a).Identity(ctx); err == nil && identity.MediaContainer.MachineIdentifier == resource.ClientIdentifier {
+			return candidate
+		}
+	}
+	return preferred
+}
+
 func bestConnection(conns []plexauth.Connection) plexauth.Connection {
+	// Plex can report a private local URI first even when the client cannot
+	// reach that network. Prefer a remote direct URI for discovered profiles;
+	// Plex's remote IP endpoints commonly terminate TLS despite advertising an
+	// http URI, and their certificates are not valid for the IP literal.
+	for _, c := range conns {
+		if !c.Local && !c.Relay {
+			return c
+		}
+	}
 	for _, c := range conns {
 		if c.Local && !c.Relay {
 			return c

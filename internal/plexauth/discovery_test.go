@@ -30,3 +30,19 @@ func TestAccountAndResourceDiscovery(t *testing.T) {
 		t.Fatalf("resources=%+v err=%v", r, err)
 	}
 }
+
+func TestResourcesPreferLegacyHTTPSConnections(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		if r.URL.Path != "/api/resources" {
+			t.Fatal("unexpected fallback request")
+		}
+		w.Write([]byte(`<MediaContainer><Device name="SF-Syno" clientIdentifier="m1" accessToken="server-token"><Connection protocol="https" uri="https://m1.plex.direct:32400" local="0" relay="0"/></Device></MediaContainer>`))
+	}))
+	defer s.Close()
+	c := New(s.URL, "test", &http.Client{})
+	r, err := c.Resources(context.Background(), "token")
+	if err != nil || len(r) != 1 || r[0].Connections[0].URI != "https://m1.plex.direct:32400" || r[0].Connections[0].Protocol != "https" {
+		t.Fatalf("resources=%+v err=%v", r, err)
+	}
+}

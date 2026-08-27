@@ -25,6 +25,7 @@ type ServerProfile struct {
 	MachineIdentifier string `json:"machine_identifier,omitempty"`
 	TokenKey          string `json:"token_key,omitempty"`
 	URL               string `json:"url"`
+	InsecureTLS       bool   `json:"insecure_tls,omitempty"`
 	Local             bool   `json:"local,omitempty"`
 	Relay             bool   `json:"relay,omitempty"`
 }

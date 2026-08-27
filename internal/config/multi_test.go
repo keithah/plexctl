@@ -12,8 +12,8 @@ func TestMultipleAccountsAndServersRoundTrip(t *testing.T) {
 			"bob":   {Username: "bob@example.com", TokenKey: "account/bob"},
 		},
 		ServersV2: map[string]ServerProfile{
-			"living": {Account: "alice", Name: "Living Room", URL: "http://living:32400", Local: true},
-			"office": {Account: "bob", Name: "Office", URL: "http://office:32400"},
+			"living": {Account: "alice", Name: "Living Room", URL: "http://living:32400", Local: true, InsecureTLS: false},
+			"office": {Account: "bob", Name: "Office", URL: "https://office:32400", InsecureTLS: true},
 		},
 	}
 	if err := Save(path, want); err != nil {
@@ -31,5 +31,8 @@ func TestMultipleAccountsAndServersRoundTrip(t *testing.T) {
 	}
 	if got.ServersV2["living"].Account != "alice" || !got.ServersV2["living"].Local {
 		t.Fatalf("living: %+v", got.ServersV2["living"])
+	}
+	if !got.ServersV2["office"].InsecureTLS {
+		t.Fatalf("office insecure TLS flag was not persisted: %+v", got.ServersV2["office"])
 	}
 }

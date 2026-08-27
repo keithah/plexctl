@@ -2,8 +2,13 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/keithah/plexctl/internal/plexauth"
 )
 
 func run(t *testing.T, args ...string) (string, error) {
@@ -116,5 +121,54 @@ func TestDownloadQueueCommandsAcceptDocumentedArguments(t *testing.T) {
 		if err := cmd.Args(cmd, []string{"1"}); err != nil {
 			t.Fatalf("download-queues %s rejected QUEUE_ID: %v", path, err)
 		}
+	}
+}
+
+func TestBestConnectionPrefersRemoteDirectOverPrivateLocal(t *testing.T) {
+	got := bestConnection([]plexauth.Connection{
+		{URI: "http://172.18.0.2:32400", Local: true},
+		{URI: "http://203.0.113.10:32400", Local: false},
+		{URI: "https://relay.plex.tv", Relay: true},
+	})
+	if got.URI != "http://203.0.113.10:32400" {
+		t.Fatalf("selected %q, want remote direct connection", got.URI)
+	}
+}
+
+func TestNormalizeDiscoveredConnectionUsesHTTPSForRemoteHTTP(t *testing.T) {
+	got := normalizeDiscoveredConnection(plexauth.Connection{URI: "http://203.0.113.10:32400"})
+	if got.URL != "https://203.0.113.10:32400" || !got.InsecureTLS {
+		t.Fatalf("normalized connection=%+v, want HTTPS with insecure TLS", got)
+	}
+}
+
+func TestNormalizeDiscoveredConnectionPreservesLocalHTTP(t *testing.T) {
+	got := normalizeDiscoveredConnection(plexauth.Connection{URI: "http://192.168.1.10:32400", Local: true})
+	if got.URL != "http://192.168.1.10:32400" || got.InsecureTLS {
+		t.Fatalf("normalized connection=%+v, want local HTTP without insecure TLS", got)
+	}
+}
+
+func TestValidatedConnectionFallsBackToRelayWhenDirectIdentityMismatches(t *testing.T) {
+	direct := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"MediaContainer":{"machineIdentifier":"other"}}`))
+	}))
+	defer direct.Close()
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"MediaContainer":{"machineIdentifier":"expected"}}`))
+	}))
+	defer relay.Close()
+	got := validatedConnection(context.Background(), plexauth.Resource{
+		ClientIdentifier: "expected",
+		AccessToken:      "server-token",
+		Connections: []plexauth.Connection{
+			{URI: direct.URL, Local: false, Relay: false},
+			{URI: relay.URL, Local: false, Relay: true},
+		},
+	}, "account-token")
+	if got.URI != relay.URL {
+		t.Fatalf("selected %q, want relay %q", got.URI, relay.URL)
 	}
 }

@@ -3,6 +3,7 @@ package plexauth
 import (
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
@@ -46,9 +47,27 @@ type Resource struct {
 	Connections      []Connection `json:"connections"`
 }
 type Connection struct {
-	URI   string `json:"uri"`
-	Local bool   `json:"local"`
-	Relay bool   `json:"relay"`
+	URI      string `json:"uri"`
+	Protocol string `json:"protocol"`
+	Local    bool   `json:"local"`
+	Relay    bool   `json:"relay"`
+}
+
+type legacyResources struct {
+	Devices []legacyDevice `xml:"Device"`
+}
+type legacyDevice struct {
+	Name             string             `xml:"name,attr"`
+	ClientIdentifier string             `xml:"clientIdentifier,attr"`
+	AccessToken      string             `xml:"accessToken,attr"`
+	Owned            string             `xml:"owned,attr"`
+	Connections      []legacyConnection `xml:"Connection"`
+}
+type legacyConnection struct {
+	URI      string `xml:"uri,attr"`
+	Protocol string `xml:"protocol,attr"`
+	Local    string `xml:"local,attr"`
+	Relay    string `xml:"relay,attr"`
 }
 
 func New(baseURL, clientID string, hc *http.Client) *Client {
@@ -102,9 +121,45 @@ func (c *Client) User(ctx context.Context, token string) (User, error) {
 	return v, err
 }
 func (c *Client) Resources(ctx context.Context, token string) ([]Resource, error) {
+	if resources, err := c.legacyResources(ctx, token); err == nil {
+		return resources, nil
+	}
 	var v []Resource
 	err := c.getJSON(ctx, "/api/v2/resources", token, &v)
 	return v, err
+}
+
+func (c *Client) legacyResources(ctx context.Context, token string) ([]Resource, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/api/resources?includeHttps=1&includeRelay=1", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/xml")
+	req.Header.Set("X-Plex-Client-Identifier", c.ClientID)
+	req.Header.Set("X-Plex-Product", c.Product)
+	req.Header.Set("X-Plex-Token", token)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("legacy Plex resources request failed: HTTP %d", resp.StatusCode)
+	}
+	var payload legacyResources
+	if err := xml.Unmarshal(data, &payload); err != nil {
+		return nil, err
+	}
+	resources := make([]Resource, 0, len(payload.Devices))
+	for _, d := range payload.Devices {
+		r := Resource{Name: d.Name, ClientIdentifier: d.ClientIdentifier, AccessToken: d.AccessToken, Owned: d.Owned == "1" || d.Owned == "true"}
+		for _, x := range d.Connections {
+			r.Connections = append(r.Connections, Connection{URI: x.URI, Protocol: x.Protocol, Local: x.Local == "1" || x.Local == "true", Relay: x.Relay == "1" || x.Relay == "true"})
+		}
+		resources = append(resources, r)
+	}
+	return resources, nil
 }
 func (c *Client) getJSON(ctx context.Context, path, token string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
