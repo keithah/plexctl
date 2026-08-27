@@ -46,3 +46,25 @@ func TestResourcesPreferLegacyHTTPSConnections(t *testing.T) {
 		t.Fatalf("resources=%+v err=%v", r, err)
 	}
 }
+
+func TestResourcesFallsBackToJSONForUnrelatedXML(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/resources" {
+			w.Header().Set("Content-Type", "application/xml")
+			w.Write([]byte(`<Error code="401"/>`))
+			return
+		}
+		if r.URL.Path == "/api/v2/resources" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`[{"name":"JSON server","clientIdentifier":"json1"}]`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer s.Close()
+	c := New(s.URL, "test", &http.Client{})
+	r, err := c.Resources(context.Background(), "token")
+	if err != nil || len(r) != 1 || r[0].Name != "JSON server" {
+		t.Fatalf("resources=%+v err=%v", r, err)
+	}
+}

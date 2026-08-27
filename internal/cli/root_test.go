@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/keithah/plexctl/internal/config"
 	"github.com/keithah/plexctl/internal/plexauth"
 )
 
@@ -142,6 +143,13 @@ func TestNormalizeDiscoveredConnectionUsesHTTPSForRemoteHTTP(t *testing.T) {
 	}
 }
 
+func TestNormalizeDiscoveredConnectionKeepsHostnameTLSVerification(t *testing.T) {
+	got := normalizeDiscoveredConnection(plexauth.Connection{URI: "http://server.plex.direct:32400"})
+	if got.URL != "https://server.plex.direct:32400" || got.InsecureTLS {
+		t.Fatalf("normalized connection=%+v, want verified HTTPS for hostname", got)
+	}
+}
+
 func TestNormalizeDiscoveredConnectionPreservesLocalHTTP(t *testing.T) {
 	got := normalizeDiscoveredConnection(plexauth.Connection{URI: "http://192.168.1.10:32400", Local: true})
 	if got.URL != "http://192.168.1.10:32400" || got.InsecureTLS {
@@ -170,5 +178,21 @@ func TestValidatedConnectionFallsBackToRelayWhenDirectIdentityMismatches(t *test
 	}, "account-token")
 	if got.URI != relay.URL {
 		t.Fatalf("selected %q, want relay %q", got.URI, relay.URL)
+	}
+}
+
+func TestConfiguredProfileAppliesPersistedInsecureTLS(t *testing.T) {
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"MediaContainer":{"machineIdentifier":"m1"}}`))
+	}))
+	defer ts.Close()
+	client, err := newPMSClient(config.Server{URL: ts.URL, InsecureTLS: true}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := client.Identity(context.Background())
+	if err != nil || identity.MediaContainer.MachineIdentifier != "m1" {
+		t.Fatalf("identity=%+v err=%v", identity, err)
 	}
 }

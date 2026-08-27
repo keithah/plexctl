@@ -54,6 +54,7 @@ type Connection struct {
 }
 
 type legacyResources struct {
+	XMLName xml.Name       `xml:"MediaContainer"`
 	Devices []legacyDevice `xml:"Device"`
 }
 type legacyDevice struct {
@@ -150,6 +151,9 @@ func (c *Client) legacyResources(ctx context.Context, token string) ([]Resource,
 	var payload legacyResources
 	if err := xml.Unmarshal(data, &payload); err != nil {
 		return nil, err
+	}
+	if payload.XMLName.Local != "MediaContainer" {
+		return nil, fmt.Errorf("unexpected legacy Plex resources root %q", payload.XMLName.Local)
 	}
 	resources := make([]Resource, 0, len(payload.Devices))
 	for _, d := range payload.Devices {

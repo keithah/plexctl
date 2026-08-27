@@ -11,6 +11,7 @@ import (
 	"github.com/keithah/plexctl/internal/plexauth"
 	"github.com/keithah/plexctl/internal/pms"
 	"github.com/spf13/cobra"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -79,13 +80,15 @@ func configured(o *options) (*pms.Client, error) {
 			return nil, fmt.Errorf("token environment variable %q is not set", s.TokenEnv)
 		}
 	}
+	return newPMSClient(s, token)
+}
+
+func newPMSClient(s config.Server, token string) (*pms.Client, error) {
 	a, e := api.New(s.URL, token, nil)
 	if e != nil {
 		return nil, e
 	}
-	if s.InsecureTLS {
-		a.SetInsecureTLS(true)
-	}
+	a.SetInsecureTLS(s.InsecureTLS)
 	return pms.New(a), nil
 }
 func commandContext(o *options) (context.Context, context.CancelFunc) {
@@ -259,7 +262,8 @@ func normalizeDiscoveredConnection(conn plexauth.Connection) normalizedConnectio
 	insecureTLS := false
 	if !conn.Local && !conn.Relay && strings.HasPrefix(url, "http://") {
 		url = "https://" + strings.TrimPrefix(url, "http://")
-		insecureTLS = true
+		host, _, err := net.SplitHostPort(strings.TrimPrefix(conn.URI, "http://"))
+		insecureTLS = err == nil && net.ParseIP(host) != nil
 	}
 	return normalizedConnection{URL: url, InsecureTLS: insecureTLS}
 }
