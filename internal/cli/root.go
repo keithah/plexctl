@@ -120,6 +120,19 @@ func configCmd() *cobra.Command {
 }
 func serverCmd(o *options) *cobra.Command {
 	cmd := &cobra.Command{Use: "server"}
+	cmd.AddCommand(&cobra.Command{Use: "info", Short: "Show server configuration and capabilities", RunE: func(*cobra.Command, []string) error {
+		c, e := configured(o)
+		if e != nil {
+			return e
+		}
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		v, e := c.Info(ctx)
+		if e == nil {
+			printValue(v, o.jsonOut)
+		}
+		return e
+	}})
 	cmd.AddCommand(&cobra.Command{Use: "identity", RunE: func(*cobra.Command, []string) error {
 		c, e := configured(o)
 		if e != nil {

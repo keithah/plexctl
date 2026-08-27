@@ -27,6 +27,7 @@ in documentation. The config file is written with mode 0600.
 
 ## Commands
 
+- `server info` — show server configuration and capabilities.
 - `server identity` — inspect the configured PMS identity.
 - `library list` / `library items SECTION_KEY` — inspect libraries and media.
 - `library search TERM [--section KEY] [--limit N]` — search via `/hubs/search`.

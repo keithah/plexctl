@@ -22,6 +22,7 @@ func (c *Client) Root(ctx context.Context) (Root, error) {
 	e := c.API.Do(ctx, "GET", "/", nil, nil, &v)
 	return v, e
 }
+func (c *Client) Info(ctx context.Context) (Root, error) { return c.Root(ctx) }
 func (c *Client) Sections(ctx context.Context) (LibrarySections, error) {
 	var v LibrarySections
 	e := c.API.Do(ctx, "GET", "/library/sections/all", nil, nil, &v)

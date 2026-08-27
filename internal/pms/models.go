@@ -29,7 +29,25 @@ type IdentityContainer struct {
 	Title             string `json:"title"`
 }
 type Root struct {
-	MediaContainer map[string]any `json:"MediaContainer"`
+	MediaContainer ServerInfo `json:"MediaContainer"`
+}
+type ServerInfo struct {
+	FriendlyName      string            `json:"friendlyName"`
+	Version           string            `json:"version"`
+	MachineIdentifier string            `json:"machineIdentifier"`
+	Platform          string            `json:"platform"`
+	PlatformVersion   string            `json:"platformVersion"`
+	TranscoderVideo   bool              `json:"transcoderVideo"`
+	TranscoderAudio   bool              `json:"transcoderAudio"`
+	HubSearch         bool              `json:"hubSearch"`
+	Livetv            int               `json:"livetv"`
+	MyPlex            bool              `json:"myPlex"`
+	Directory         []ServerDirectory `json:"Directory"`
+}
+type ServerDirectory struct {
+	Key   string `json:"key"`
+	Title string `json:"title"`
+	Count int    `json:"count"`
 }
 type LibrarySections struct {
 	MediaContainer struct {
