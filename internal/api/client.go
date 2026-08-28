@@ -72,8 +72,7 @@ func (c *Client) Do(ctx context.Context, method, path string, query url.Values, 
 		u.Path = unescaped
 		u.RawPath = escapedPath
 	} else {
-		// Invalid escape (e.g. %ZZ) — send as-is; String() will escape '%' to %25.
-		u.Path = escapedPath
+		return fmt.Errorf("invalid path escape %q", escapedPath)
 	}
 	u.RawQuery = query.Encode()
 	req, e := http.NewRequestWithContext(ctx, method, u.String(), body)
