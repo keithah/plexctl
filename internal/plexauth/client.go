@@ -181,7 +181,7 @@ func (c *Client) getJSON(ctx context.Context, path, token string, out any) error
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("Plex request failed: HTTP %d", resp.StatusCode)
+		return fmt.Errorf("plex request failed: HTTP %d", resp.StatusCode)
 	}
 	if err := json.Unmarshal(data, out); err != nil {
 		return fmt.Errorf("decode Plex response: %w", err)
@@ -207,7 +207,7 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("Plex authentication request failed: HTTP %d", resp.StatusCode)
+		return fmt.Errorf("plex authentication request failed: HTTP %d", resp.StatusCode)
 	}
 	if err := json.Unmarshal(data, out); err != nil {
 		return fmt.Errorf("decode Plex authentication response: %w", err)

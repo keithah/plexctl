@@ -134,8 +134,13 @@ func configCmd() *cobra.Command {
 		if e != nil {
 			return e
 		}
-		for n, s := range c.Servers {
-			fmt.Printf("%s\t%s\n", n, s.URL)
+		names := make([]string, 0, len(c.Servers))
+		for n := range c.Servers {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			fmt.Printf("%s	%s\n", n, c.Servers[n].URL)
 		}
 		return nil
 	}})
