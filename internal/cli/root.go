@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 )
@@ -195,7 +196,11 @@ func authCmd() *cobra.Command {
 		}
 		c.Accounts[name] = config.Account{Username: u.Username, Email: u.Email, PlexID: u.ID, TokenKey: key}
 		for i, r := range resources {
-			conn := validatedConnection(ctx, r, result.Token)
+			conn, err := validatedConnection(ctx, r, result.Token)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Skipping %s: %v\n", r.Name, err)
+				continue
+			}
 			if conn.URI == "" {
 				continue
 			}
@@ -258,20 +263,23 @@ type normalizedConnection struct {
 }
 
 func normalizeDiscoveredConnection(conn plexauth.Connection) normalizedConnection {
-	url := conn.URI
+	normalizedURL := conn.URI
 	insecureTLS := false
-	if !conn.Local && !conn.Relay && strings.HasPrefix(url, "http://") {
-		url = "https://" + strings.TrimPrefix(url, "http://")
-		host, _, err := net.SplitHostPort(strings.TrimPrefix(conn.URI, "http://"))
-		insecureTLS = err == nil && net.ParseIP(host) != nil
+	if !conn.Local && !conn.Relay && strings.HasPrefix(normalizedURL, "http://") {
+		normalizedURL = "https://" + strings.TrimPrefix(normalizedURL, "http://")
+		if parsed, err := url.Parse(conn.URI); err == nil {
+			insecureTLS = net.ParseIP(parsed.Hostname()) != nil
+		}
 	}
-	return normalizedConnection{URL: url, InsecureTLS: insecureTLS}
+	return normalizedConnection{URL: normalizedURL, InsecureTLS: insecureTLS}
 }
 
-func validatedConnection(ctx context.Context, resource plexauth.Resource, accountToken string) plexauth.Connection {
+func validatedConnection(ctx context.Context, resource plexauth.Resource, accountToken string) (plexauth.Connection, error) {
 	candidates := append([]plexauth.Connection(nil), resource.Connections...)
-	// Preserve the normal preference order while retaining relay as a fallback.
 	preferred := bestConnection(candidates)
+	if preferred.URI == "" {
+		return plexauth.Connection{}, fmt.Errorf("no connections discovered")
+	}
 	ordered := []plexauth.Connection{preferred}
 	for _, candidate := range candidates {
 		if candidate.URI == preferred.URI {
@@ -284,31 +292,31 @@ func validatedConnection(ctx context.Context, resource plexauth.Resource, accoun
 		token = accountToken
 	}
 	for _, candidate := range ordered {
+		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		normalized := normalizeDiscoveredConnection(candidate)
 		a, err := api.New(normalized.URL, token, nil)
 		if err != nil {
+			cancel()
 			continue
 		}
 		a.SetInsecureTLS(normalized.InsecureTLS)
-		if identity, err := pms.New(a).Identity(ctx); err == nil && identity.MediaContainer.MachineIdentifier == resource.ClientIdentifier {
-			return candidate
+		identity, err := pms.New(a).Identity(probeCtx)
+		cancel()
+		if err == nil && identity.MediaContainer.MachineIdentifier == resource.ClientIdentifier {
+			return candidate, nil
 		}
 	}
-	return preferred
+	return plexauth.Connection{}, fmt.Errorf("no reachable connection matched machine identifier")
 }
 
 func bestConnection(conns []plexauth.Connection) plexauth.Connection {
-	// Plex can report a private local URI first even when the client cannot
-	// reach that network. Prefer a remote direct URI for discovered profiles;
-	// Plex's remote IP endpoints commonly terminate TLS despite advertising an
-	// http URI, and their certificates are not valid for the IP literal.
 	for _, c := range conns {
-		if !c.Local && !c.Relay {
+		if c.Local && !c.Relay {
 			return c
 		}
 	}
 	for _, c := range conns {
-		if c.Local && !c.Relay {
+		if !c.Local && !c.Relay {
 			return c
 		}
 	}
@@ -322,6 +330,22 @@ func bestConnection(conns []plexauth.Connection) plexauth.Connection {
 	}
 	return plexauth.Connection{}
 }
+func printAccounts(c config.Config) {
+	names := make([]string, 0, len(c.Accounts))
+	for name := range c.Accounts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		a := c.Accounts[name]
+		mark := ""
+		if name == c.CurrentAccount {
+			mark = " *"
+		}
+		fmt.Printf("%s\t%s%s\n", name, a.Email, mark)
+	}
+}
+
 func accountsCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "accounts", Short: "List and select authenticated Plex accounts"}
 	cmd.RunE = func(*cobra.Command, []string) error {
@@ -329,13 +353,7 @@ func accountsCmd() *cobra.Command {
 		if e != nil {
 			return e
 		}
-		for n, a := range c.Accounts {
-			mark := ""
-			if n == c.CurrentAccount {
-				mark = " *"
-			}
-			fmt.Printf("%s	%s%s\n", n, a.Email, mark)
-		}
+		printAccounts(c)
 		return nil
 	}
 	cmd.AddCommand(&cobra.Command{Use: "list", RunE: func(*cobra.Command, []string) error {
@@ -343,13 +361,7 @@ func accountsCmd() *cobra.Command {
 		if e != nil {
 			return e
 		}
-		for n, a := range c.Accounts {
-			mark := ""
-			if n == c.CurrentAccount {
-				mark = " *"
-			}
-			fmt.Printf("%s\t%s%s\n", n, a.Email, mark)
-		}
+		printAccounts(c)
 		return nil
 	}})
 	cmd.AddCommand(&cobra.Command{Use: "use ACCOUNT", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, a []string) error {
@@ -371,6 +383,22 @@ func accountsCmd() *cobra.Command {
 	}})
 	return cmd
 }
+func printServers(c config.Config) {
+	ids := make([]string, 0, len(c.ServersV2))
+	for id := range c.ServersV2 {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		s := c.ServersV2[id]
+		mark := ""
+		if id == c.CurrentServer {
+			mark = " *"
+		}
+		fmt.Printf("%s\t%s\t%s\taccount=%s%s\n", id, s.Name, s.URL, s.Account, mark)
+	}
+}
+
 func serversCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "servers", Short: "List and select discovered Plex servers"}
 	cmd.RunE = func(*cobra.Command, []string) error {
@@ -378,13 +406,7 @@ func serversCmd() *cobra.Command {
 		if e != nil {
 			return e
 		}
-		for id, s := range c.ServersV2 {
-			mark := ""
-			if id == c.CurrentServer {
-				mark = " *"
-			}
-			fmt.Printf("%s	%s	%s	account=%s%s\n", id, s.Name, s.URL, s.Account, mark)
-		}
+		printServers(c)
 		return nil
 	}
 	cmd.AddCommand(&cobra.Command{Use: "list", RunE: func(*cobra.Command, []string) error {
@@ -392,13 +414,7 @@ func serversCmd() *cobra.Command {
 		if e != nil {
 			return e
 		}
-		for id, s := range c.ServersV2 {
-			mark := ""
-			if id == c.CurrentServer {
-				mark = " *"
-			}
-			fmt.Printf("%s\t%s\t%s\taccount=%s%s\n", id, s.Name, s.URL, s.Account, mark)
-		}
+		printServers(c)
 		return nil
 	}})
 	cmd.AddCommand(&cobra.Command{Use: "use SERVER", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, a []string) error {

@@ -125,14 +125,14 @@ func TestDownloadQueueCommandsAcceptDocumentedArguments(t *testing.T) {
 	}
 }
 
-func TestBestConnectionPrefersRemoteDirectOverPrivateLocal(t *testing.T) {
+func TestBestConnectionPrefersLocalDirect(t *testing.T) {
 	got := bestConnection([]plexauth.Connection{
 		{URI: "http://172.18.0.2:32400", Local: true},
 		{URI: "http://203.0.113.10:32400", Local: false},
 		{URI: "https://relay.plex.tv", Relay: true},
 	})
-	if got.URI != "http://203.0.113.10:32400" {
-		t.Fatalf("selected %q, want remote direct connection", got.URI)
+	if got.URI != "http://172.18.0.2:32400" {
+		t.Fatalf("selected %q, want local direct connection", got.URI)
 	}
 }
 
@@ -140,6 +140,20 @@ func TestNormalizeDiscoveredConnectionUsesHTTPSForRemoteHTTP(t *testing.T) {
 	got := normalizeDiscoveredConnection(plexauth.Connection{URI: "http://203.0.113.10:32400"})
 	if got.URL != "https://203.0.113.10:32400" || !got.InsecureTLS {
 		t.Fatalf("normalized connection=%+v, want HTTPS with insecure TLS", got)
+	}
+}
+
+func TestNormalizeDiscoveredConnectionDisablesTLSVerificationForPortlessIP(t *testing.T) {
+	got := normalizeDiscoveredConnection(plexauth.Connection{URI: "http://203.0.113.10"})
+	if got.URL != "https://203.0.113.10" || !got.InsecureTLS {
+		t.Fatalf("normalized connection=%+v, want HTTPS with insecure TLS", got)
+	}
+}
+
+func TestNormalizeDiscoveredConnectionDisablesTLSVerificationForPortlessIPv6(t *testing.T) {
+	got := normalizeDiscoveredConnection(plexauth.Connection{URI: "http://[2001:db8::10]"})
+	if got.URL != "https://[2001:db8::10]" || !got.InsecureTLS {
+		t.Fatalf("normalized connection=%+v, want IPv6 HTTPS with insecure TLS", got)
 	}
 }
 
@@ -168,7 +182,7 @@ func TestValidatedConnectionFallsBackToRelayWhenDirectIdentityMismatches(t *test
 		w.Write([]byte(`{"MediaContainer":{"machineIdentifier":"expected"}}`))
 	}))
 	defer relay.Close()
-	got := validatedConnection(context.Background(), plexauth.Resource{
+	got, err := validatedConnection(context.Background(), plexauth.Resource{
 		ClientIdentifier: "expected",
 		AccessToken:      "server-token",
 		Connections: []plexauth.Connection{
@@ -176,8 +190,26 @@ func TestValidatedConnectionFallsBackToRelayWhenDirectIdentityMismatches(t *test
 			{URI: relay.URL, Local: false, Relay: true},
 		},
 	}, "account-token")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got.URI != relay.URL {
 		t.Fatalf("selected %q, want relay %q", got.URI, relay.URL)
+	}
+}
+
+func TestValidatedConnectionFailsClosedWhenNoIdentityMatches(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"MediaContainer":{"machineIdentifier":"other"}}`))
+	}))
+	defer server.Close()
+	_, err := validatedConnection(context.Background(), plexauth.Resource{
+		ClientIdentifier: "expected",
+		Connections:      []plexauth.Connection{{URI: server.URL}},
+	}, "account-token")
+	if err == nil {
+		t.Fatal("validatedConnection returned a connection after all identities failed")
 	}
 }
 

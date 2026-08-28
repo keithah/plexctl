@@ -28,6 +28,11 @@ account metadata and discovered server connections and is written with mode
 0600. The legacy environment-token configuration remains available for
 automation.
 
+When discovery advertises a remote HTTP URL, `plexctl` upgrades it to HTTPS.
+For IP-literal endpoints only, certificate verification is disabled because
+Plex's certificate cannot match the IP address; hostname-based endpoints keep
+normal certificate verification.
+
 ## Commands
 
 - `server info` — show server configuration and capabilities.
