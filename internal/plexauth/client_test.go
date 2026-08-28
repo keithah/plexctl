@@ -12,12 +12,16 @@ func TestLoginCreatesAndPollsPin(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == http.MethodPost && r.URL.Path == "/api/v2/pins" {
-			w.Write([]byte(`{"id":42,"code":"ABCD"}`))
+			if _, err := w.Write([]byte(`{"id":42,"code":"ABCD"}`)); err != nil {
+				t.Errorf("write response: %v", err)
+			}
 			return
 		}
 		if r.Method == http.MethodGet && r.URL.Path == "/api/v2/pins/42" {
 			calls++
-			w.Write([]byte(`{"id":42,"code":"ABCD","authToken":"token-123"}`))
+			if _, err := w.Write([]byte(`{"id":42,"code":"ABCD","authToken":"token-123"}`)); err != nil {
+				t.Errorf("write response: %v", err)
+			}
 			return
 		}
 		http.NotFound(w, r)

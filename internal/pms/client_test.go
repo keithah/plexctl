@@ -16,7 +16,9 @@ func recorder(t *testing.T, body string) (*Client, *[]string, func()) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.RequestURI())
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(body))
+		if _, err := w.Write([]byte(body)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	a, err := api.New(s.URL, "", nil)
 	if err != nil {

@@ -12,13 +12,19 @@ import (
 func TestPlaylistEndpointsAndEscaping(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
+		switch r.URL.EscapedPath() {
 		case "/playlists":
-			w.Write([]byte(`{"MediaContainer":{"size":1,"Metadata":[{"ratingKey":"p1","title":"Favorites","playlistType":"video","smart":true}]}}`))
-		case "/playlists/p%2F1", "/playlists/p/1":
-			w.Write([]byte(`{"MediaContainer":{"size":0}}`))
+			if _, err := w.Write([]byte(`{"MediaContainer":{"size":1,"Metadata":[{"ratingKey":"p1","title":"Favorites","playlistType":"video","smart":true}]}}`)); err != nil {
+				t.Errorf("write response: %v", err)
+			}
+		case "/playlists/p%2F1":
+			if _, err := w.Write([]byte(`{"MediaContainer":{"size":0}}`)); err != nil {
+				t.Errorf("write response: %v", err)
+			}
 		case "/playlists/p1/items":
-			w.Write([]byte(`{"MediaContainer":{"size":2,"Metadata":[{"ratingKey":"m1","title":"One"}]}}`))
+			if _, err := w.Write([]byte(`{"MediaContainer":{"size":2,"Metadata":[{"ratingKey":"m1","title":"One"}]}}`)); err != nil {
+				t.Errorf("write response: %v", err)
+			}
 		default:
 			http.NotFound(w, r)
 		}

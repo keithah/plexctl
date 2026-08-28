@@ -79,9 +79,14 @@ func Save(path string, c Config) error {
 		return e
 	}
 	if e = os.Chmod(tmp, 0600); e != nil {
+		_ = os.Remove(tmp)
 		return e
 	}
-	return os.Rename(tmp, path)
+	if e = os.Rename(tmp, path); e != nil {
+		_ = os.Remove(tmp)
+		return e
+	}
+	return nil
 }
 func (c Config) Resolve(name string) (string, Server, error) {
 	if name == "" {

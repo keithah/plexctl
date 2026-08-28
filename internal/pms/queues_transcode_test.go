@@ -14,18 +14,24 @@ func TestDownloadQueueAndTranscodeEndpoints(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/downloadQueue/1" {
-			w.Write([]byte(`{"MediaContainer":{"DownloadQueue":[{"id":1,"itemCount":2,"status":"processing"}]}}`))
+			if _, err := w.Write([]byte(`{"MediaContainer":{"DownloadQueue":[{"id":1,"itemCount":2,"status":"processing"}]}}`)); err != nil {
+				t.Errorf("write response: %v", err)
+			}
 			return
 		}
 		if r.URL.Path == "/downloadQueue/1/items" {
-			w.Write([]byte(`{"MediaContainer":{"DownloadQueueItem":[{"id":9,"title":"Movie","status":"processing"}]}}`))
+			if _, err := w.Write([]byte(`{"MediaContainer":{"DownloadQueueItem":[{"id":9,"title":"Movie","status":"processing"}]}}`)); err != nil {
+				t.Errorf("write response: %v", err)
+			}
 			return
 		}
 		if r.URL.Path == "/video/:/transcode/universal/decision" {
 			if r.URL.Query().Get("transcodeSessionId") != "abc" {
 				t.Errorf("query: %s", r.URL.RawQuery)
 			}
-			w.Write([]byte(`{"MediaContainer":{"canDirectPlay":true}}`))
+			if _, err := w.Write([]byte(`{"MediaContainer":{"canDirectPlay":true}}`)); err != nil {
+				t.Errorf("write response: %v", err)
+			}
 			return
 		}
 		if r.URL.Path == "/video/:/transcode/universal/subtitles" {

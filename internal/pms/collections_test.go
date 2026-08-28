@@ -13,11 +13,15 @@ func TestCollectionEndpoints(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/library/sections/2/collections" {
-			w.Write([]byte(`{"MediaContainer":{"size":1,"Metadata":[{"ratingKey":"c1","title":"Sci-Fi"}]}}`))
+			if _, err := w.Write([]byte(`{"MediaContainer":{"size":1,"Metadata":[{"ratingKey":"c1","title":"Sci-Fi"}]}}`)); err != nil {
+				t.Errorf("write response: %v", err)
+			}
 			return
 		}
 		if r.URL.Path == "/library/collections/c1/items" {
-			w.Write([]byte(`{"MediaContainer":{"size":3,"Metadata":[{"ratingKey":"m1","title":"Arrival"}]}}`))
+			if _, err := w.Write([]byte(`{"MediaContainer":{"size":3,"Metadata":[{"ratingKey":"m1","title":"Arrival"}]}}`)); err != nil {
+				t.Errorf("write response: %v", err)
+			}
 			return
 		}
 		http.NotFound(w, r)

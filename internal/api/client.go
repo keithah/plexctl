@@ -61,10 +61,16 @@ func (c *Client) SetInsecureTLS(insecure bool) {
 }
 func (c *Client) Do(ctx context.Context, method, path string, query url.Values, body io.Reader, out any) error {
 	if path == "" || !strings.HasPrefix(path, "/") {
-		return fmt.Errorf("API path must start with /")
+		return fmt.Errorf("api path must start with /")
 	}
 	u := *c.BaseURL
-	u.Path = strings.TrimRight(c.BaseURL.Path, "/") + path
+	escapedPath := strings.TrimRight(c.BaseURL.Path, "/") + path
+	if unescaped, err := url.PathUnescape(escapedPath); err == nil {
+		u.Path = unescaped
+		u.RawPath = escapedPath
+	} else {
+		u.Path = escapedPath
+	}
 	u.RawQuery = query.Encode()
 	req, e := http.NewRequestWithContext(ctx, method, u.String(), body)
 	if e != nil {

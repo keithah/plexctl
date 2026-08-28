@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/keithah/plexctl/internal/api"
 	"github.com/keithah/plexctl/internal/authstore"
@@ -191,7 +192,7 @@ func authCmd() *cobra.Command {
 			name = u.Username
 		}
 		if name == "" {
-			return fmt.Errorf("Plex account has no username; provide --name")
+			return errors.New("plex account has no username; provide --name")
 		}
 		resources, err := p.Resources(ctx, result.Token)
 		if err != nil {
@@ -258,7 +259,9 @@ func authCmd() *cobra.Command {
 		delete(c.Accounts, a[0])
 		for id, s := range c.ServersV2 {
 			if s.Account == a[0] {
-				_ = authstore.Delete("server/" + a[0] + "/" + id)
+				if s.TokenKey != "" && s.TokenKey != ac.TokenKey {
+					_ = authstore.Delete(s.TokenKey)
+				}
 				delete(c.ServersV2, id)
 			}
 		}
@@ -607,14 +610,14 @@ func sessionsCmd(o *options) *cobra.Command {
 		}
 		return e
 	}})
-	var accountID, viewedAt, librarySectionID, metadataItemID, sort string
+	var accountID, viewedAt, librarySectionID, metadataItemID, sortExpr string
 	history := &cobra.Command{Use: "history", RunE: func(*cobra.Command, []string) error {
 		c, e := configured(o)
 		if e != nil {
 			return e
 		}
 		q := url.Values{}
-		for key, value := range map[string]string{"accountID": accountID, "viewedAt": viewedAt, "librarySectionID": librarySectionID, "metadataItemID": metadataItemID, "sort": sort} {
+		for key, value := range map[string]string{"accountID": accountID, "viewedAt": viewedAt, "librarySectionID": librarySectionID, "metadataItemID": metadataItemID, "sort": sortExpr} {
 			if value != "" {
 				q.Set(key, value)
 			}
@@ -631,7 +634,7 @@ func sessionsCmd(o *options) *cobra.Command {
 	history.Flags().StringVar(&viewedAt, "viewed-at", "", "filter by viewed-at timestamp")
 	history.Flags().StringVar(&librarySectionID, "section-id", "", "filter by library section ID")
 	history.Flags().StringVar(&metadataItemID, "metadata-id", "", "filter by metadata item ID")
-	history.Flags().StringVar(&sort, "sort", "", "sort expression, for example viewedAt:desc")
+	history.Flags().StringVar(&sortExpr, "sort", "", "sort expression, for example viewedAt:desc")
 	cmd.AddCommand(history)
 	return cmd
 }
@@ -774,7 +777,7 @@ func healthCmd(o *options) *cobra.Command {
 		if e != nil {
 			return e
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), o.timeout)
+		ctx, cancel := commandContext(o)
 		defer cancel()
 		r := health.Ping(ctx, c)
 		printValue(r, o.jsonOut)
@@ -788,7 +791,7 @@ func healthCmd(o *options) *cobra.Command {
 		if e != nil {
 			return e
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), o.timeout)
+		ctx, cancel := commandContext(o)
 		defer cancel()
 		r := health.Check(ctx, c)
 		printValue(r, o.jsonOut)

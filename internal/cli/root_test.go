@@ -174,19 +174,23 @@ func TestNormalizeDiscoveredConnectionPreservesLocalHTTP(t *testing.T) {
 func TestValidatedConnectionFallsBackToRelayWhenDirectIdentityMismatches(t *testing.T) {
 	direct := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"MediaContainer":{"machineIdentifier":"other"}}`))
+		if _, err := w.Write([]byte(`{"MediaContainer":{"machineIdentifier":"other"}}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	defer direct.Close()
 	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"MediaContainer":{"machineIdentifier":"expected"}}`))
+		if _, err := w.Write([]byte(`{"MediaContainer":{"machineIdentifier":"expected"}}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	defer relay.Close()
 	got, err := validatedConnection(context.Background(), plexauth.Resource{
 		ClientIdentifier: "expected",
 		AccessToken:      "server-token",
 		Connections: []plexauth.Connection{
-			{URI: direct.URL, Local: false, Relay: false},
+			{URI: direct.URL, Local: true, Relay: false},
 			{URI: relay.URL, Local: false, Relay: true},
 		},
 	}, "account-token")
@@ -201,12 +205,14 @@ func TestValidatedConnectionFallsBackToRelayWhenDirectIdentityMismatches(t *test
 func TestValidatedConnectionFailsClosedWhenNoIdentityMatches(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"MediaContainer":{"machineIdentifier":"other"}}`))
+		if _, err := w.Write([]byte(`{"MediaContainer":{"machineIdentifier":"other"}}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	defer server.Close()
 	_, err := validatedConnection(context.Background(), plexauth.Resource{
 		ClientIdentifier: "expected",
-		Connections:      []plexauth.Connection{{URI: server.URL}},
+		Connections:      []plexauth.Connection{{URI: server.URL, Local: true}},
 	}, "account-token")
 	if err == nil {
 		t.Fatal("validatedConnection returned a connection after all identities failed")
@@ -216,7 +222,9 @@ func TestValidatedConnectionFailsClosedWhenNoIdentityMatches(t *testing.T) {
 func TestConfiguredProfileAppliesPersistedInsecureTLS(t *testing.T) {
 	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"MediaContainer":{"machineIdentifier":"m1"}}`))
+		if _, err := w.Write([]byte(`{"MediaContainer":{"machineIdentifier":"m1"}}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	defer ts.Close()
 	client, err := newPMSClient(config.Server{URL: ts.URL, InsecureTLS: true}, "")

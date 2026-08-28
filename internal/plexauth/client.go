@@ -84,7 +84,7 @@ func (c *Client) Login(ctx context.Context) (LoginResult, error) {
 		return LoginResult{}, err
 	}
 	if pin.ID == 0 || pin.Code == "" {
-		return LoginResult{}, fmt.Errorf("Plex returned an incomplete authentication PIN")
+		return LoginResult{}, fmt.Errorf("plex returned an incomplete authentication PIN")
 	}
 	result := LoginResult{ID: pin.ID, Code: pin.Code, LinkURL: "https://app.plex.tv/auth#?clientID=" + url.QueryEscape(c.ClientID) + "&code=" + url.QueryEscape(pin.Code)}
 	if c.OnPIN != nil {
@@ -122,7 +122,7 @@ func (c *Client) User(ctx context.Context, token string) (User, error) {
 	return v, err
 }
 func (c *Client) Resources(ctx context.Context, token string) ([]Resource, error) {
-	if resources, err := c.legacyResources(ctx, token); err == nil {
+	if resources, err := c.legacyResources(ctx, token); err == nil && len(resources) > 0 {
 		return resources, nil
 	}
 	var v []Resource

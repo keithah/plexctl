@@ -12,9 +12,13 @@ func TestAccountAndResourceDiscovery(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/api/v2/user":
-			w.Write([]byte(`{"id":7,"username":"alice","email":"alice@example.com"}`))
+			if _, err := w.Write([]byte(`{"id":7,"username":"alice","email":"alice@example.com"}`)); err != nil {
+				t.Errorf("write response: %v", err)
+			}
 		case "/api/v2/resources":
-			w.Write([]byte(`[{"name":"Living","clientIdentifier":"m1","accessToken":"server-token","owned":true,"connections":[{"uri":"http://living:32400","local":true,"relay":false},{"uri":"https://relay","local":false,"relay":true}]},{"name":"Office","clientIdentifier":"m2","owned":true,"connections":[{"uri":"http://office:32400","local":true}]}]`))
+			if _, err := w.Write([]byte(`[{"name":"Living","clientIdentifier":"m1","accessToken":"server-token","owned":true,"connections":[{"uri":"http://living:32400","local":true,"relay":false},{"uri":"https://relay","local":false,"relay":true}]},{"name":"Office","clientIdentifier":"m2","owned":true,"connections":[{"uri":"http://office:32400","local":true}]}]`)); err != nil {
+				t.Errorf("write response: %v", err)
+			}
 		default:
 			http.NotFound(w, r)
 		}
@@ -54,12 +58,16 @@ func TestResourcesFallsBackToJSONForUnrelatedXML(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/resources" {
 			w.Header().Set("Content-Type", "application/xml")
-			w.Write([]byte(`<Error code="401"/>`))
+			if _, err := w.Write([]byte(`<Error code="401"/>`)); err != nil {
+				t.Errorf("write response: %v", err)
+			}
 			return
 		}
 		if r.URL.Path == "/api/v2/resources" {
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`[{"name":"JSON server","clientIdentifier":"json1"}]`))
+			if _, err := w.Write([]byte(`[{"name":"JSON server","clientIdentifier":"json1"}]`)); err != nil {
+				t.Errorf("write response: %v", err)
+			}
 			return
 		}
 		http.NotFound(w, r)
