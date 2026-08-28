@@ -65,10 +65,14 @@ func (c *Client) Do(ctx context.Context, method, path string, query url.Values, 
 	}
 	u := *c.BaseURL
 	escapedPath := strings.TrimRight(c.BaseURL.Path, "/") + path
+	// Preserve single-encoding for already-escaped segments (e.g. p%2F1):
+	// net/url requires Path to hold the decoded form and RawPath the encoded
+	// form; String() then emits RawPath without re-escaping '%'.
 	if unescaped, err := url.PathUnescape(escapedPath); err == nil {
 		u.Path = unescaped
 		u.RawPath = escapedPath
 	} else {
+		// Invalid escape (e.g. %ZZ) — send as-is; String() will escape '%' to %25.
 		u.Path = escapedPath
 	}
 	u.RawQuery = query.Encode()

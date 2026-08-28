@@ -90,14 +90,12 @@ func (c *Client) Login(ctx context.Context) (LoginResult, error) {
 	if c.OnPIN != nil {
 		c.OnPIN(result.LinkURL)
 	}
-	deadline := time.Now().Add(c.Timeout)
+	ctx, cancel := context.WithTimeout(ctx, c.Timeout)
+	defer cancel()
 	for {
 		if pin.Token != "" {
 			result.Token = pin.Token
 			return result, nil
-		}
-		if time.Now().After(deadline) {
-			return LoginResult{}, fmt.Errorf("timed out waiting for Plex authorization")
 		}
 		wait := c.PollInterval
 		if wait <= 0 {
@@ -107,6 +105,9 @@ func (c *Client) Login(ctx context.Context) (LoginResult, error) {
 		select {
 		case <-ctx.Done():
 			t.Stop()
+			if ctx.Err() == context.DeadlineExceeded {
+				return LoginResult{}, fmt.Errorf("timed out waiting for Plex authorization")
+			}
 			return LoginResult{}, ctx.Err()
 		case <-t.C:
 		}

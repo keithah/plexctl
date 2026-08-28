@@ -75,9 +75,9 @@ func configured(o *options) (*pms.Client, error) {
 			if e != nil {
 				return nil, e
 			}
-			token = os.Getenv(s.TokenEnv)
-			if s.TokenEnv != "" && token == "" {
-				return nil, fmt.Errorf("token environment variable %q is not set", s.TokenEnv)
+			token, e = tokenFromEnv(s)
+			if e != nil {
+				return nil, e
 			}
 		}
 	} else {
@@ -85,12 +85,20 @@ func configured(o *options) (*pms.Client, error) {
 		if e != nil {
 			return nil, e
 		}
-		token = os.Getenv(s.TokenEnv)
-		if s.TokenEnv != "" && token == "" {
-			return nil, fmt.Errorf("token environment variable %q is not set", s.TokenEnv)
+		token, e = tokenFromEnv(s)
+		if e != nil {
+			return nil, e
 		}
 	}
 	return newPMSClient(s, token)
+}
+
+func tokenFromEnv(s config.Server) (string, error) {
+	token := os.Getenv(s.TokenEnv)
+	if s.TokenEnv != "" && token == "" {
+		return "", fmt.Errorf("token environment variable %q is not set", s.TokenEnv)
+	}
+	return token, nil
 }
 
 func newPMSClient(s config.Server, token string) (*pms.Client, error) {

@@ -74,17 +74,30 @@ func Save(path string, c Config) error {
 	if e != nil {
 		return e
 	}
-	tmp := path + ".tmp"
-	if e = os.WriteFile(tmp, append(b, '\n'), 0600); e != nil {
-		return e
+	b = append(b, '\n')
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, "config-*.tmp")
+	if err != nil {
+		return err
 	}
-	if e = os.Chmod(tmp, 0600); e != nil {
+	tmp := f.Name()
+	if _, err := f.Write(b); err != nil {
+		f.Close()
 		_ = os.Remove(tmp)
-		return e
+		return err
 	}
-	if e = os.Rename(tmp, path); e != nil {
+	if err := f.Chmod(0600); err != nil {
+		f.Close()
 		_ = os.Remove(tmp)
-		return e
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
 	}
 	return nil
 }
