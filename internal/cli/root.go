@@ -55,22 +55,30 @@ func configured(o *options) (*pms.Client, error) {
 			name = c.CurrentServer
 		}
 		p, ok := c.ServersV2[name]
-		if !ok {
-			return nil, fmt.Errorf("server %q is not configured", name)
-		}
-		if a, ok := c.Accounts[p.Account]; ok {
-			key := p.TokenKey
-			if key == "" {
-				key = a.TokenKey
+		if ok {
+			if a, ok := c.Accounts[p.Account]; ok {
+				key := p.TokenKey
+				if key == "" {
+					key = a.TokenKey
+				}
+				token, e = authstore.Get(key)
+			} else {
+				e = fmt.Errorf("account %q is not configured", p.Account)
 			}
-			token, e = authstore.Get(key)
+			if e != nil {
+				return nil, e
+			}
+			s = config.Server{URL: p.URL, InsecureTLS: p.InsecureTLS}
 		} else {
-			e = fmt.Errorf("account %q is not configured", p.Account)
+			_, s, e = c.Resolve(name)
+			if e != nil {
+				return nil, e
+			}
+			token = os.Getenv(s.TokenEnv)
+			if s.TokenEnv != "" && token == "" {
+				return nil, fmt.Errorf("token environment variable %q is not set", s.TokenEnv)
+			}
 		}
-		if e != nil {
-			return nil, e
-		}
-		s = config.Server{URL: p.URL, InsecureTLS: p.InsecureTLS}
 	} else {
 		_, s, e = c.Resolve(o.server)
 		if e != nil {
@@ -93,6 +101,9 @@ func newPMSClient(s config.Server, token string) (*pms.Client, error) {
 	return pms.New(a), nil
 }
 func commandContext(o *options) (context.Context, context.CancelFunc) {
+	if o.timeout <= 0 {
+		return context.WithCancel(context.Background())
+	}
 	return context.WithTimeout(context.Background(), o.timeout)
 }
 func printValue(v any, jsonOut bool) {
@@ -195,6 +206,7 @@ func authCmd() *cobra.Command {
 			return fmt.Errorf("store Plex token: %w", err)
 		}
 		c.Accounts[name] = config.Account{Username: u.Username, Email: u.Email, PlexID: u.ID, TokenKey: key}
+		savedServers := 0
 		for i, r := range resources {
 			conn, err := validatedConnection(ctx, r, result.Token)
 			if err != nil {
@@ -220,6 +232,7 @@ func authCmd() *cobra.Command {
 			if c.CurrentServer == "" {
 				c.CurrentServer = id
 			}
+			savedServers++
 		}
 		if c.CurrentAccount == "" {
 			c.CurrentAccount = name
@@ -227,7 +240,7 @@ func authCmd() *cobra.Command {
 		if err := config.Save(config.Path(), c); err != nil {
 			return err
 		}
-		fmt.Printf("Authenticated %s; discovered %d Plex servers.\n", name, len(resources))
+		fmt.Printf("Authenticated %s; discovered %d Plex servers.\n", name, savedServers)
 		return nil
 	}}
 	login.Flags().StringVar(&accountName, "name", "", "local account name (defaults to Plex username)")
@@ -245,6 +258,7 @@ func authCmd() *cobra.Command {
 		delete(c.Accounts, a[0])
 		for id, s := range c.ServersV2 {
 			if s.Account == a[0] {
+				_ = authstore.Delete("server/" + a[0] + "/" + id)
 				delete(c.ServersV2, id)
 			}
 		}
@@ -373,11 +387,15 @@ func accountsCmd() *cobra.Command {
 			return fmt.Errorf("account %q is not configured", a[0])
 		}
 		c.CurrentAccount = a[0]
+		var ids []string
 		for id, s := range c.ServersV2 {
 			if s.Account == a[0] {
-				c.CurrentServer = id
-				break
+				ids = append(ids, id)
 			}
+		}
+		if len(ids) > 0 {
+			sort.Strings(ids)
+			c.CurrentServer = ids[0]
 		}
 		return config.Save(config.Path(), c)
 	}})
@@ -717,9 +735,9 @@ func queuesCmd(o *options) *cobra.Command {
 }
 func transcodeCmd(o *options) *cobra.Command {
 	cmd := &cobra.Command{Use: "transcode"}
-	var params []string
 	for _, name := range []string{"decision", "subtitles"} {
 		n := name
+		var params []string
 		c := &cobra.Command{Use: n + " TYPE SESSION_ID", Short: "Read universal transcode " + n, Args: cobra.ExactArgs(2), RunE: func(_ *cobra.Command, a []string) error {
 			q := url.Values{}
 			for _, p := range params {

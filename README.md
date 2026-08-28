@@ -40,7 +40,7 @@ normal certificate verification.
 - `accounts list` / `accounts use ACCOUNT` — list and select accounts.
 - `servers list` / `servers use SERVER_ID` — list and select discovered servers.
 - `server identity` — inspect the configured PMS identity.
-- `library list` / `library items SECTION_KEY` — inspect libraries and media.
+- `library list` — inspect libraries.
 - `library search TERM [--section KEY] [--limit N]` — search via `/hubs/search`.
 - `library recently-added SECTION_KEY [--limit N]` — newest items in a library.
 - `library items SECTION_KEY [--sort EXPR] [--limit N]` — browse a library page.
@@ -51,7 +51,7 @@ normal certificate verification.
 - `transcode decision TYPE SESSION_ID [--param key=value]` — inspect universal transcode decisions.
 - `transcode subtitles TYPE SESSION_ID [--param key=value]` — query universal subtitle handling.
 - `sessions list` — list active sessions.
-- `sessions history [--account-id ID] [--section-id ID] [--sort EXPR]` — playback history.
+- `sessions history [--account-id ID] [--section-id ID] [--sort EXPR] [--viewed-at TIME] [--metadata-id ID]` — playback history.
 - `health ping` — bounded identity liveness check.
 - `health check` — identity plus library-access check.
 - `api GET /path` — read-only access to any PMS endpoint.

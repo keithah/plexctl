@@ -17,7 +17,9 @@ func TestClientHeadersAndJSON(t *testing.T) {
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"ok":true}`))
+		if _, err := w.Write([]byte(`{"ok":true}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	defer s.Close()
 	c, e := New(s.URL, "secret", nil)
@@ -36,7 +38,9 @@ func TestClientHeadersAndJSON(t *testing.T) {
 func TestHTTPErrorDoesNotExposeToken(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(401)
-		w.Write([]byte(`X-Plex-Token=secret`))
+		if _, err := w.Write([]byte(`X-Plex-Token=secret`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	defer s.Close()
 	c, _ := New(s.URL, "secret", nil)
@@ -51,7 +55,9 @@ func TestHTTPErrorDoesNotExposeToken(t *testing.T) {
 func TestInsecureTLSIsHonored(t *testing.T) {
 	s := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"ok":true}`))
+		if _, err := w.Write([]byte(`{"ok":true}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	defer s.Close()
 

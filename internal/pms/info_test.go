@@ -12,10 +12,13 @@ import (
 func TestServerInfoParsesRootConfiguration(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
-			t.Fatalf("path: %s", r.URL.Path)
+			t.Errorf("path: %s", r.URL.Path)
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"MediaContainer":{"friendlyName":"Living Room Plex","version":"1.42.0","machineIdentifier":"machine-1","Directory":[{"key":"1","title":"Movies","count":42}],"transcoderVideo":true}}`))
+		if _, err := w.Write([]byte(`{"MediaContainer":{"friendlyName":"Living Room Plex","version":"1.42.0","machineIdentifier":"machine-1","Directory":[{"key":"1","title":"Movies","count":42}],"transcoderVideo":true}}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	defer s.Close()
 	a, err := api.New(s.URL, "", nil)

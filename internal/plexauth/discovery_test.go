@@ -35,9 +35,12 @@ func TestResourcesPreferLegacyHTTPSConnections(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/xml")
 		if r.URL.Path != "/api/resources" {
-			t.Fatal("unexpected fallback request")
+			t.Errorf("unexpected fallback request")
+			return
 		}
-		w.Write([]byte(`<MediaContainer><Device name="SF-Syno" clientIdentifier="m1" accessToken="server-token"><Connection protocol="https" uri="https://m1.plex.direct:32400" local="0" relay="0"/></Device></MediaContainer>`))
+		if _, err := w.Write([]byte(`<MediaContainer><Device name="SF-Syno" clientIdentifier="m1" accessToken="server-token"><Connection protocol="https" uri="https://m1.plex.direct:32400" local="0" relay="0"/></Device></MediaContainer>`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	defer s.Close()
 	c := New(s.URL, "test", &http.Client{})
