@@ -268,15 +268,28 @@ func authCmd() *cobra.Command {
 		if !ok {
 			return fmt.Errorf("account %q is not configured", a[0])
 		}
-		_ = authstore.Delete(ac.TokenKey)
-		delete(c.Accounts, a[0])
+		var errs []string
+		if err := authstore.Delete(ac.TokenKey); err != nil {
+			errs = append(errs, fmt.Sprintf("account token %q: %v", ac.TokenKey, err))
+		} else {
+			delete(c.Accounts, a[0])
+		}
 		for id, s := range c.ServersV2 {
 			if s.Account == a[0] {
 				if s.TokenKey != "" && s.TokenKey != ac.TokenKey {
-					_ = authstore.Delete(s.TokenKey)
+					if err := authstore.Delete(s.TokenKey); err != nil {
+						errs = append(errs, fmt.Sprintf("server %q token %q: %v", id, s.TokenKey, err))
+						continue
+					}
 				}
 				delete(c.ServersV2, id)
 			}
+		}
+		if len(errs) > 0 {
+			// Persist partial deletions so remaining profiles reflect what was actually removed,
+			// but surface the failure instead of reporting success with orphaned credentials.
+			_ = config.Save(config.Path(), c)
+			return fmt.Errorf("logout partially failed: %s", strings.Join(errs, "; "))
 		}
 		if c.CurrentAccount == a[0] {
 			c.CurrentAccount = ""

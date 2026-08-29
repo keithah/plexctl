@@ -42,14 +42,15 @@ func (c *Client) SetInsecureTLS(insecure bool) {
 	if c.HTTP == nil {
 		c.HTTP = &http.Client{Timeout: 30 * time.Second}
 	}
+	if c.HTTP.Transport == nil {
+		c.HTTP.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: insecure}}
+		return
+	}
 	tr, ok := c.HTTP.Transport.(*http.Transport)
-	if !ok || tr == nil {
-		base, _ := http.DefaultTransport.(*http.Transport)
-		if base != nil {
-			tr = base.Clone()
-		} else {
-			tr = &http.Transport{}
-		}
+	if !ok {
+		// Preserve custom RoundTrippers (test mocks, tracing, proxy wrappers)
+		// instead of silently replacing them with DefaultTransport.
+		return
 	}
 	if tr.TLSClientConfig == nil {
 		tr.TLSClientConfig = &tls.Config{}
@@ -64,7 +65,7 @@ func (c *Client) Do(ctx context.Context, method, path string, query url.Values, 
 		return fmt.Errorf("api path must start with /")
 	}
 	u := *c.BaseURL
-	escapedPath := strings.TrimRight(c.BaseURL.Path, "/") + path
+	escapedPath := strings.TrimRight(c.BaseURL.EscapedPath(), "/") + path
 	// Preserve single-encoding for already-escaped segments (e.g. p%2F1):
 	// net/url requires Path to hold the decoded form and RawPath the encoded
 	// form; String() then emits RawPath without re-escaping '%'.
