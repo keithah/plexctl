@@ -79,3 +79,77 @@ func TestResourcesFallsBackToJSONForUnrelatedXML(t *testing.T) {
 		t.Fatalf("resources=%+v err=%v", r, err)
 	}
 }
+
+// A Plex account also returns players and controllers. Those have no PMS API,
+// so discovery must not treat them as servers.
+func TestResourcesSkipNonServerDevices(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/resources" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/xml")
+		if _, err := w.Write([]byte(`<MediaContainer>` +
+			`<Device name="My Server" clientIdentifier="srv1" provides="server"><Connection uri="https://srv1.plex.direct:32400"/></Device>` +
+			`<Device name="Phone" clientIdentifier="phone1" provides="client,player"><Connection uri="http://10.0.0.99:32500" local="1"/></Device>` +
+			`<Device name="Web" clientIdentifier="web1" provides="controller"><Connection uri="http://10.0.0.50:32400" local="1"/></Device>` +
+			`</MediaContainer>`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
+	}))
+	defer s.Close()
+	got, err := New(s.URL, "test", &http.Client{}).Resources(context.Background(), "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ClientIdentifier != "srv1" {
+		t.Fatalf("resources=%+v, want only the server device", got)
+	}
+}
+
+func TestResourcesSkipNonServerDevicesFromJSON(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/resources" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := w.Write([]byte(`[` +
+			`{"name":"My Server","clientIdentifier":"srv1","provides":"server","connections":[{"uri":"https://srv1.plex.direct:32400"}]},` +
+			`{"name":"Phone","clientIdentifier":"phone1","provides":"client,player","connections":[{"uri":"http://10.0.0.99:32500","local":true}]}` +
+			`]`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
+	}))
+	defer s.Close()
+	got, err := New(s.URL, "test", &http.Client{}).Resources(context.Background(), "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ClientIdentifier != "srv1" {
+		t.Fatalf("resources=%+v, want only the server device", got)
+	}
+}
+
+// Older payloads omit "provides"; those resources must be kept so real servers
+// are not silently dropped.
+func TestResourcesKeepDevicesWithoutProvides(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/resources" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/xml")
+		if _, err := w.Write([]byte(`<MediaContainer><Device name="Legacy" clientIdentifier="old1"><Connection uri="https://old1.plex.direct:32400"/></Device></MediaContainer>`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
+	}))
+	defer s.Close()
+	got, err := New(s.URL, "test", &http.Client{}).Resources(context.Background(), "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ClientIdentifier != "old1" {
+		t.Fatalf("resources=%+v, want the provides-less device kept", got)
+	}
+}

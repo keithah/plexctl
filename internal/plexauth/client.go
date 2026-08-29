@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -43,6 +44,7 @@ type Resource struct {
 	Name             string       `json:"name"`
 	ClientIdentifier string       `json:"clientIdentifier"`
 	AccessToken      string       `json:"accessToken"`
+	Provides         string       `json:"provides"`
 	Owned            bool         `json:"owned"`
 	Connections      []Connection `json:"connections"`
 }
@@ -61,6 +63,7 @@ type legacyDevice struct {
 	Name             string             `xml:"name,attr"`
 	ClientIdentifier string             `xml:"clientIdentifier,attr"`
 	AccessToken      string             `xml:"accessToken,attr"`
+	Provides         string             `xml:"provides,attr"`
 	Owned            string             `xml:"owned,attr"`
 	Connections      []legacyConnection `xml:"Connection"`
 }
@@ -124,11 +127,29 @@ func (c *Client) User(ctx context.Context, token string) (User, error) {
 }
 func (c *Client) Resources(ctx context.Context, token string) ([]Resource, error) {
 	if resources, err := c.legacyResources(ctx, token); err == nil && len(resources) > 0 {
-		return resources, nil
+		return onlyServers(resources), nil
 	}
 	var v []Resource
 	err := c.getJSON(ctx, "/api/v2/resources", token, &v)
-	return v, err
+	if err != nil {
+		return nil, err
+	}
+	return onlyServers(v), nil
+}
+
+// onlyServers keeps resources that advertise the "server" capability. A Plex
+// account also returns players, controllers, and other devices, which have no
+// PMS API and would otherwise be probed and reported as unreachable servers.
+// Resources that omit "provides" are kept, because older payloads do not
+// always populate it and dropping them would hide real servers.
+func onlyServers(in []Resource) []Resource {
+	out := make([]Resource, 0, len(in))
+	for _, r := range in {
+		if r.Provides == "" || slices.Contains(strings.Split(r.Provides, ","), "server") {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 func (c *Client) legacyResources(ctx context.Context, token string) ([]Resource, error) {
@@ -161,7 +182,7 @@ func (c *Client) legacyResources(ctx context.Context, token string) ([]Resource,
 	}
 	resources := make([]Resource, 0, len(payload.Devices))
 	for _, d := range payload.Devices {
-		r := Resource{Name: d.Name, ClientIdentifier: d.ClientIdentifier, AccessToken: d.AccessToken, Owned: d.Owned == "1" || d.Owned == "true"}
+		r := Resource{Name: d.Name, ClientIdentifier: d.ClientIdentifier, AccessToken: d.AccessToken, Provides: d.Provides, Owned: d.Owned == "1" || d.Owned == "true"}
 		for _, x := range d.Connections {
 			r.Connections = append(r.Connections, Connection{URI: x.URI, Protocol: x.Protocol, Local: x.Local == "1" || x.Local == "true", Relay: x.Relay == "1" || x.Relay == "true"})
 		}
