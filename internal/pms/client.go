@@ -132,12 +132,14 @@ func (c *Client) TranscodeDecision(ctx context.Context, transcodeType, sessionID
 	e := c.API.Do(ctx, "GET", "/"+url.PathEscape(transcodeType)+"/:/transcode/universal/decision", q, nil, &v)
 	return v, e
 }
-func (c *Client) TranscodeSubtitles(ctx context.Context, transcodeType, sessionID string, q url.Values) (any, error) {
+
+// TranscodeSubtitles returns the raw subtitle payload. Plex serves WebVTT here
+// rather than JSON, so the body must not be JSON-decoded.
+func (c *Client) TranscodeSubtitles(ctx context.Context, transcodeType, sessionID string, q url.Values) (string, error) {
 	q = cloneValues(q)
 	q.Set("transcodeSessionId", sessionID)
-	var v any
-	err := c.API.Do(ctx, "GET", "/"+url.PathEscape(transcodeType)+"/:/transcode/universal/subtitles", q, nil, &v)
-	return v, err
+	data, err := c.API.DoRaw(ctx, "GET", "/"+url.PathEscape(transcodeType)+"/:/transcode/universal/subtitles", q, nil)
+	return string(data), err
 }
 func cloneValues(in url.Values) url.Values {
 	out := url.Values{}

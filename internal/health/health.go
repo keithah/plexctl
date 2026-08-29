@@ -2,7 +2,6 @@ package health
 
 import (
 	"context"
-	"fmt"
 	"github.com/keithah/plexctl/internal/pms"
 	"time"
 )
@@ -53,5 +52,5 @@ func Check(ctx context.Context, c *pms.Client) Result {
 		}
 		return r
 	}
-	return Result{OK: true, Classification: OK, Stage: "library", Detail: fmt.Sprintf("identity and library access verified"), Duration: time.Since(start)}
+	return Result{OK: true, Classification: OK, Stage: "library", Detail: "identity and library access verified", Duration: time.Since(start)}
 }

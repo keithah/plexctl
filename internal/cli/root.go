@@ -807,8 +807,10 @@ func transcodeCmd(o *options) *cobra.Command {
 				return e
 			}
 			v, e := client.TranscodeSubtitles(x, a[0], a[1], q)
-			if e == nil {
-				printValue(v, o.jsonOut)
+			if e == nil && v != "" {
+				// Subtitles are WebVTT text, so print verbatim rather than
+				// through the JSON/struct formatter.
+				fmt.Println(strings.TrimRight(v, "\n"))
 			}
 			return e
 		}}

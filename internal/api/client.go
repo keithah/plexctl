@@ -61,8 +61,25 @@ func (c *Client) SetInsecureTLS(insecure bool) {
 	c.HTTP.Transport = tr
 }
 func (c *Client) Do(ctx context.Context, method, path string, query url.Values, body io.Reader, out any) error {
+	data, err := c.DoRaw(ctx, method, path, query, body)
+	if err != nil {
+		return err
+	}
+	if out == nil || len(data) == 0 {
+		return nil
+	}
+	if err = json.Unmarshal(data, out); err != nil {
+		return fmt.Errorf("decode %s %s: %w", method, path, err)
+	}
+	return nil
+}
+
+// DoRaw performs the request and returns the undecoded response body. Use it
+// for endpoints that do not return JSON (for example universal/subtitles,
+// which returns WebVTT).
+func (c *Client) DoRaw(ctx context.Context, method, path string, query url.Values, body io.Reader) ([]byte, error) {
 	if path == "" || !strings.HasPrefix(path, "/") {
-		return fmt.Errorf("api path must start with /")
+		return nil, fmt.Errorf("api path must start with /")
 	}
 	u := *c.BaseURL
 	escapedPath := strings.TrimRight(c.BaseURL.EscapedPath(), "/") + path
@@ -73,12 +90,12 @@ func (c *Client) Do(ctx context.Context, method, path string, query url.Values, 
 		u.Path = unescaped
 		u.RawPath = escapedPath
 	} else {
-		return fmt.Errorf("invalid path escape %q", escapedPath)
+		return nil, fmt.Errorf("invalid path escape %q", escapedPath)
 	}
 	u.RawQuery = query.Encode()
 	req, e := http.NewRequestWithContext(ctx, method, u.String(), body)
 	if e != nil {
-		return e
+		return nil, e
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-Plex-Client-Identifier", c.ClientID)
@@ -91,23 +108,17 @@ func (c *Client) Do(ctx context.Context, method, path string, query url.Values, 
 	}
 	resp, e := c.HTTP.Do(req)
 	if e != nil {
-		return e
+		return nil, e
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
-		return fmt.Errorf("read %s %s response: %w", method, path, err)
+		return nil, fmt.Errorf("read %s %s response: %w", method, path, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &HTTPError{resp.StatusCode, method, path, safeDetail(data, c.Token)}
+		return nil, &HTTPError{resp.StatusCode, method, path, safeDetail(data, c.Token)}
 	}
-	if out == nil || len(data) == 0 {
-		return nil
-	}
-	if e = json.Unmarshal(data, out); e != nil {
-		return fmt.Errorf("decode %s %s: %w", method, path, e)
-	}
-	return nil
+	return data, nil
 }
 func safeDetail(b []byte, token string) string {
 	s := string(b)
