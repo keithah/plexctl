@@ -132,10 +132,12 @@ func (c *Client) TranscodeDecision(ctx context.Context, transcodeType, sessionID
 	e := c.API.Do(ctx, "GET", "/"+url.PathEscape(transcodeType)+"/:/transcode/universal/decision", q, nil, &v)
 	return v, e
 }
-func (c *Client) TranscodeSubtitles(ctx context.Context, transcodeType, sessionID string, q url.Values) error {
+func (c *Client) TranscodeSubtitles(ctx context.Context, transcodeType, sessionID string, q url.Values) (any, error) {
 	q = cloneValues(q)
 	q.Set("transcodeSessionId", sessionID)
-	return c.API.Do(ctx, "GET", "/"+url.PathEscape(transcodeType)+"/:/transcode/universal/subtitles", q, nil, nil)
+	var v any
+	err := c.API.Do(ctx, "GET", "/"+url.PathEscape(transcodeType)+"/:/transcode/universal/subtitles", q, nil, &v)
+	return v, err
 }
 func cloneValues(in url.Values) url.Values {
 	out := url.Values{}

@@ -94,7 +94,10 @@ func (c *Client) Do(ctx context.Context, method, path string, query url.Values, 
 		return e
 	}
 	defer resp.Body.Close()
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return fmt.Errorf("read %s %s response: %w", method, path, err)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return &HTTPError{resp.StatusCode, method, path, safeDetail(data, c.Token)}
 	}

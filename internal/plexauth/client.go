@@ -145,7 +145,10 @@ func (c *Client) legacyResources(ctx context.Context, token string) ([]Resource,
 		return nil, err
 	}
 	defer resp.Body.Close()
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read legacy Plex resources response: %w", err)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("legacy Plex resources request failed: HTTP %d", resp.StatusCode)
 	}
@@ -180,7 +183,10 @@ func (c *Client) getJSON(ctx context.Context, path, token string, out any) error
 		return err
 	}
 	defer resp.Body.Close()
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return fmt.Errorf("read Plex response: %w", err)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("plex request failed: HTTP %d", resp.StatusCode)
 	}
@@ -206,7 +212,10 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 		return err
 	}
 	defer resp.Body.Close()
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return fmt.Errorf("read Plex authentication response: %w", err)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("plex authentication request failed: HTTP %d", resp.StatusCode)
 	}

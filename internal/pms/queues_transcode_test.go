@@ -57,7 +57,7 @@ func TestDownloadQueueAndTranscodeEndpoints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = c.TranscodeSubtitles(context.Background(), "video", "abc", nil); err != nil {
+	if _, err = c.TranscodeSubtitles(context.Background(), "video", "abc", nil); err != nil {
 		t.Fatal(err)
 	}
 }

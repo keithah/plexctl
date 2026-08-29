@@ -117,7 +117,12 @@ func commandContext(o *options) (context.Context, context.CancelFunc) {
 }
 func printValue(v any, jsonOut bool) {
 	if jsonOut {
-		b, _ := json.MarshalIndent(v, "", "  ")
+		b, err := json.MarshalIndent(v, "", "  ")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "marshal output: %v\n", err)
+			fmt.Printf("%+v\n", v)
+			return
+		}
 		fmt.Println(string(b))
 		return
 	}
@@ -801,7 +806,11 @@ func transcodeCmd(o *options) *cobra.Command {
 				}
 				return e
 			}
-			return client.TranscodeSubtitles(x, a[0], a[1], q)
+			v, e := client.TranscodeSubtitles(x, a[0], a[1], q)
+			if e == nil {
+				printValue(v, o.jsonOut)
+			}
+			return e
 		}}
 		c.Flags().StringArrayVar(&params, "param", nil, "transcode query parameter key=value (repeatable)")
 		cmd.AddCommand(c)
