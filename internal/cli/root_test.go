@@ -171,6 +171,46 @@ func TestNormalizeDiscoveredConnectionPreservesLocalHTTP(t *testing.T) {
 	}
 }
 
+func TestNormalizeDiscoveredConnectionDisablesTLSVerificationForHTTPSIPLiteral(t *testing.T) {
+	// A certificate can never match a bare IP, so a discovered https:// IP
+	// endpoint needs the same treatment as an upgraded http:// one.
+	got := normalizeDiscoveredConnection(plexauth.Connection{URI: "https://203.0.113.10:32400"})
+	if got.URL != "https://203.0.113.10:32400" || !got.InsecureTLS {
+		t.Fatalf("normalized connection=%+v, want insecure TLS for https IP literal", got)
+	}
+}
+
+func TestNormalizeDiscoveredConnectionKeepsHTTPSHostnameVerification(t *testing.T) {
+	got := normalizeDiscoveredConnection(plexauth.Connection{URI: "https://server.plex.direct:32400"})
+	if got.URL != "https://server.plex.direct:32400" || got.InsecureTLS {
+		t.Fatalf("normalized connection=%+v, want verified HTTPS for hostname", got)
+	}
+}
+
+func TestOrderedConnectionsRanksRelayLast(t *testing.T) {
+	ordered := orderedConnections([]plexauth.Connection{
+		{URI: "https://relay.plex.direct:443", Relay: true},
+		{URI: "https://direct.plex.direct:32400"},
+		{URI: "http://10.0.0.5:32400", Local: true},
+	})
+	want := []string{"http://10.0.0.5:32400", "https://direct.plex.direct:32400", "https://relay.plex.direct:443"}
+	if len(ordered) != len(want) {
+		t.Fatalf("ordered %d connections, want %d", len(ordered), len(want))
+	}
+	for i, w := range want {
+		if ordered[i].URI != w {
+			t.Fatalf("ordered[%d]=%q, want %q (relay must be probed last)", i, ordered[i].URI, w)
+		}
+	}
+}
+
+func TestOrderedConnectionsSkipsEmptyURIs(t *testing.T) {
+	ordered := orderedConnections([]plexauth.Connection{{URI: ""}, {URI: "https://direct.plex.direct:32400"}})
+	if len(ordered) != 1 || ordered[0].URI != "https://direct.plex.direct:32400" {
+		t.Fatalf("ordered=%+v, want only the non-empty connection", ordered)
+	}
+}
+
 func TestValidatedConnectionFallsBackToRelayWhenDirectIdentityMismatches(t *testing.T) {
 	direct := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

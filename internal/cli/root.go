@@ -308,10 +308,17 @@ type normalizedConnection struct {
 func normalizeDiscoveredConnection(conn plexauth.Connection) normalizedConnection {
 	normalizedURL := conn.URI
 	insecureTLS := false
-	if !conn.Local && !conn.Relay && strings.HasPrefix(normalizedURL, "http://") {
-		normalizedURL = "https://" + strings.TrimPrefix(normalizedURL, "http://")
-		if parsed, err := url.Parse(conn.URI); err == nil {
-			insecureTLS = net.ParseIP(parsed.Hostname()) != nil
+	if !conn.Local && !conn.Relay {
+		if strings.HasPrefix(normalizedURL, "http://") {
+			normalizedURL = "https://" + strings.TrimPrefix(normalizedURL, "http://")
+		}
+		// A certificate can never match a bare IP literal, so verification must be
+		// disabled for IP-literal remote endpoints regardless of the discovered
+		// scheme. Hostname endpoints (including *.plex.direct) keep verification.
+		if strings.HasPrefix(normalizedURL, "https://") {
+			if parsed, err := url.Parse(normalizedURL); err == nil {
+				insecureTLS = net.ParseIP(parsed.Hostname()) != nil
+			}
 		}
 	}
 	return normalizedConnection{URL: normalizedURL, InsecureTLS: insecureTLS}
@@ -319,16 +326,9 @@ func normalizeDiscoveredConnection(conn plexauth.Connection) normalizedConnectio
 
 func validatedConnection(ctx context.Context, resource plexauth.Resource, accountToken string) (plexauth.Connection, error) {
 	candidates := append([]plexauth.Connection(nil), resource.Connections...)
-	preferred := bestConnection(candidates)
-	if preferred.URI == "" {
+	ordered := orderedConnections(candidates)
+	if len(ordered) == 0 {
 		return plexauth.Connection{}, fmt.Errorf("no connections discovered")
-	}
-	ordered := []plexauth.Connection{preferred}
-	for _, candidate := range candidates {
-		if candidate.URI == preferred.URI {
-			continue
-		}
-		ordered = append(ordered, candidate)
 	}
 	token := resource.AccessToken
 	if token == "" {
@@ -352,24 +352,36 @@ func validatedConnection(ctx context.Context, resource plexauth.Resource, accoun
 	return plexauth.Connection{}, fmt.Errorf("no reachable connection matched machine identifier")
 }
 
+// orderedConnections ranks every candidate by the documented preference:
+// local direct, then remote direct, then relay. Ranking the whole slice (rather
+// than only picking a single preferred entry) keeps the fallback chain in
+// preference order, so a relay is never probed before an untried direct
+// connection. Order within a tier is preserved as discovered.
+func orderedConnections(conns []plexauth.Connection) []plexauth.Connection {
+	tiers := [3][]plexauth.Connection{}
+	for _, c := range conns {
+		if c.URI == "" {
+			continue
+		}
+		switch {
+		case c.Relay:
+			tiers[2] = append(tiers[2], c)
+		case c.Local:
+			tiers[0] = append(tiers[0], c)
+		default:
+			tiers[1] = append(tiers[1], c)
+		}
+	}
+	ordered := make([]plexauth.Connection, 0, len(conns))
+	for _, tier := range tiers {
+		ordered = append(ordered, tier...)
+	}
+	return ordered
+}
+
 func bestConnection(conns []plexauth.Connection) plexauth.Connection {
-	for _, c := range conns {
-		if c.Local && !c.Relay {
-			return c
-		}
-	}
-	for _, c := range conns {
-		if !c.Local && !c.Relay {
-			return c
-		}
-	}
-	for _, c := range conns {
-		if !c.Relay {
-			return c
-		}
-	}
-	if len(conns) > 0 {
-		return conns[0]
+	if ordered := orderedConnections(conns); len(ordered) > 0 {
+		return ordered[0]
 	}
 	return plexauth.Connection{}
 }
