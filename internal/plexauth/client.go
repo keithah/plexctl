@@ -145,9 +145,9 @@ func (c *Client) legacyResources(ctx context.Context, token string) ([]Resource,
 		return nil, err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	data, err := readLimited(resp.Body, 4<<20, "legacy Plex resources")
 	if err != nil {
-		return nil, fmt.Errorf("read legacy Plex resources response: %w", err)
+		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("legacy Plex resources request failed: HTTP %d", resp.StatusCode)
@@ -169,6 +169,21 @@ func (c *Client) legacyResources(ctx context.Context, token string) ([]Resource,
 	}
 	return resources, nil
 }
+
+// readLimited buffers at most limit bytes and reports an explicit error when
+// the body is larger, so an oversized response is never silently truncated
+// into a confusing decode failure.
+func readLimited(r io.Reader, limit int64, what string) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("read %s response: %w", what, err)
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("%s response exceeds %d byte limit", what, limit)
+	}
+	return data, nil
+}
+
 func (c *Client) getJSON(ctx context.Context, path, token string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
 	if err != nil {
@@ -183,9 +198,9 @@ func (c *Client) getJSON(ctx context.Context, path, token string, out any) error
 		return err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	data, err := readLimited(resp.Body, 2<<20, "Plex")
 	if err != nil {
-		return fmt.Errorf("read Plex response: %w", err)
+		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("plex request failed: HTTP %d", resp.StatusCode)
@@ -212,9 +227,9 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 		return err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	data, err := readLimited(resp.Body, 1<<20, "Plex authentication")
 	if err != nil {
-		return fmt.Errorf("read Plex authentication response: %w", err)
+		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("plex authentication request failed: HTTP %d", resp.StatusCode)

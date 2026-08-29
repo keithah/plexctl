@@ -12,6 +12,11 @@ import (
 	"time"
 )
 
+// maxResponseBytes bounds how much of a PMS response is buffered in memory.
+// Exceeding it is reported as an explicit error rather than silently
+// truncating the body.
+const maxResponseBytes int64 = 2 << 20
+
 type Client struct {
 	BaseURL     *url.URL
 	Token       string
@@ -111,12 +116,18 @@ func (c *Client) DoRaw(ctx context.Context, method, path string, query url.Value
 		return nil, e
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	// Read one byte past the cap so a body that exactly fills the limit can be
+	// distinguished from one that was truncated. Silently truncating would
+	// surface as a confusing "unexpected end of JSON input" decode error.
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read %s %s response: %w", method, path, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, &HTTPError{resp.StatusCode, method, path, safeDetail(data, c.Token)}
+	}
+	if int64(len(data)) > maxResponseBytes {
+		return nil, fmt.Errorf("%s %s response exceeds %d byte limit; narrow the request with a limit or filter", method, path, maxResponseBytes)
 	}
 	return data, nil
 }

@@ -84,3 +84,50 @@ func TestInsecureTLSIsHonored(t *testing.T) {
 	}
 	var _ = tls.Config{}
 }
+
+// An oversized body must fail loudly instead of being silently truncated into
+// a confusing "unexpected end of JSON input" decode error.
+func TestOversizedResponseIsReportedNotTruncated(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := w.Write([]byte(`{"title":"` + strings.Repeat("x", 3<<20) + `"}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
+	}))
+	defer s.Close()
+	c, err := New(s.URL, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]string
+	err = c.Do(context.Background(), "GET", "/library/sections/1/all", nil, nil, &out)
+	if err == nil {
+		t.Fatal("expected an error for an oversized response")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("error = %v, want an explicit size-limit error", err)
+	}
+}
+
+// A body that fits exactly within the cap must still succeed.
+func TestResponseAtSizeLimitSucceeds(t *testing.T) {
+	body := `{"title":"` + strings.Repeat("x", int(maxResponseBytes)-12) + `"}`
+	if int64(len(body)) != maxResponseBytes {
+		t.Fatalf("test body is %d bytes, want exactly %d", len(body), maxResponseBytes)
+	}
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := w.Write([]byte(body)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
+	}))
+	defer s.Close()
+	c, err := New(s.URL, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]string
+	if err := c.Do(context.Background(), "GET", "/identity", nil, nil, &out); err != nil {
+		t.Fatalf("body exactly at the limit should succeed, got %v", err)
+	}
+}
