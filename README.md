@@ -4,6 +4,12 @@
 provides safe, scriptable server inspection and health checks while preserving a
 raw read-only API escape hatch for the broad PMS API surface.
 
+The current release is a CLI/client, not an MCP server or HTTP service. Its
+health package is intentionally separated from the CLI so a small, local HTTP
+adapter can be added for external monitors such as Uptime Kuma without
+duplicating Plex authentication, resource discovery, connection selection, or
+health classification.
+
 ## Install
 
 ```bash
