@@ -3,8 +3,10 @@ package cli
 import (
 	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -274,5 +276,61 @@ func TestConfiguredProfileAppliesPersistedInsecureTLS(t *testing.T) {
 	identity, err := client.Identity(context.Background())
 	if err != nil || identity.MediaContainer.MachineIdentifier != "m1" {
 		t.Fatalf("identity=%+v err=%v", identity, err)
+	}
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	fn()
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = old
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
+}
+
+// Listings iterate maps, so they must be sorted to stay stable across runs.
+func TestAccountAndServerListingsAreSortedAndStable(t *testing.T) {
+	c := config.Config{
+		CurrentAccount: "bob",
+		CurrentServer:  "s2",
+		Accounts: map[string]config.Account{
+			"zoe":   {Email: "zoe@example.com"},
+			"alice": {Email: "alice@example.com"},
+			"bob":   {Email: "bob@example.com"},
+		},
+		ServersV2: map[string]config.ServerProfile{
+			"s3": {Name: "Three", URL: "http://3", Account: "zoe"},
+			"s1": {Name: "One", URL: "http://1", Account: "alice"},
+			"s2": {Name: "Two", URL: "http://2", Account: "bob"},
+		},
+	}
+	accounts := captureStdout(t, func() { printAccounts(c) })
+	servers := captureStdout(t, func() { printServers(c) })
+	for i := 0; i < 25; i++ {
+		if got := captureStdout(t, func() { printAccounts(c) }); got != accounts {
+			t.Fatalf("account listing is not deterministic:\n%q\nvs\n%q", accounts, got)
+		}
+		if got := captureStdout(t, func() { printServers(c) }); got != servers {
+			t.Fatalf("server listing is not deterministic:\n%q\nvs\n%q", servers, got)
+		}
+	}
+	wantAccounts := "alice\talice@example.com\nbob\tbob@example.com *\nzoe\tzoe@example.com\n"
+	if accounts != wantAccounts {
+		t.Errorf("accounts = %q, want %q", accounts, wantAccounts)
+	}
+	wantServers := "s1\tOne\thttp://1\taccount=alice\ns2\tTwo\thttp://2\taccount=bob *\ns3\tThree\thttp://3\taccount=zoe\n"
+	if servers != wantServers {
+		t.Errorf("servers = %q, want %q", servers, wantServers)
 	}
 }

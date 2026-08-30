@@ -31,3 +31,53 @@ func httpHandler(t *testing.T, body string) http.Handler {
 		}
 	})
 }
+
+func healthClient(t *testing.T, url string) *pms.Client {
+	t.Helper()
+	a, err := api.New(url, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pms.New(a)
+}
+
+// A rejected token is actionable differently from an unreachable server, so it
+// must be classified as an auth failure rather than a generic identity failure.
+func TestAuthFailureIsClassified(t *testing.T) {
+	for _, code := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "denied", code)
+		}))
+		got := Check(context.Background(), healthClient(t, s.URL))
+		s.Close()
+		if got.Classification != AuthFailure {
+			t.Errorf("HTTP %d classified as %q, want %q", code, got.Classification, AuthFailure)
+		}
+	}
+}
+
+func TestCheckReportsLibraryAndSuccess(t *testing.T) {
+	identityOnly := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/identity" {
+			if _, err := w.Write([]byte(`{"MediaContainer":{"machineIdentifier":"m1"}}`)); err != nil {
+				t.Errorf("write response: %v", err)
+			}
+			return
+		}
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer identityOnly.Close()
+	if got := Check(context.Background(), healthClient(t, identityOnly.URL)); got.OK || got.Classification != LibraryFailure {
+		t.Fatalf("result=%+v, want a library failure", got)
+	}
+
+	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := w.Write([]byte(`{"MediaContainer":{"machineIdentifier":"m1","Directory":[]}}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
+	}))
+	defer healthy.Close()
+	if got := Check(context.Background(), healthClient(t, healthy.URL)); !got.OK || got.Classification != OK {
+		t.Fatalf("result=%+v, want a healthy result", got)
+	}
+}
