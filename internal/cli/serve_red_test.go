@@ -16,8 +16,13 @@ func TestResolveServeTargetFailsClosedOnUnknownServer(t *testing.T) {
 		ServersV2: map[string]config.ServerProfile{"real": {Account: "real", Name: "real", URL: "http://127.0.0.1:9"}},
 		Accounts:  map[string]config.Account{"real": {Username: "real", TokenKey: "k"}},
 	}
-	b, _ := json.Marshal(cfg)
-	os.WriteFile(cfgPath, b, 0600)
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, b, 0600); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("PLEXCTL_CONFIG", cfgPath)
 	t.Setenv("TOK", "x")
 
@@ -37,8 +42,13 @@ func TestResolveServeTargetFailsClosedOnLegacyServer(t *testing.T) {
 		},
 		Accounts: map[string]config.Account{"real": {Username: "real", TokenKey: "k"}},
 	}
-	b, _ := json.Marshal(cfg)
-	os.WriteFile(cfgPath, b, 0600)
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, b, 0600); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("PLEXCTL_CONFIG", cfgPath)
 	t.Setenv("TOK", "x")
 
@@ -58,8 +68,13 @@ func TestResolveServeTargetRejectsWrongAccount(t *testing.T) {
 			"other": {Username: "other", TokenKey: "k2"},
 		},
 	}
-	b, _ := json.Marshal(cfg)
-	os.WriteFile(cfgPath, b, 0600)
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, b, 0600); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("PLEXCTL_CONFIG", cfgPath)
 
 	o := &options{}
@@ -75,17 +90,22 @@ func TestResolveServeTargetAcceptsCorrectAccountReachesConfigured(t *testing.T) 
 		ServersV2: map[string]config.ServerProfile{"myserver": {Account: "real", Name: "myserver", URL: "http://127.0.0.1:9"}},
 		Accounts:  map[string]config.Account{"real": {Username: "real", TokenKey: "TOK"}},
 	}
-	b, _ := json.Marshal(cfg)
-	os.WriteFile(cfgPath, b, 0600)
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, b, 0600); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("PLEXCTL_CONFIG", cfgPath)
 	// No TOK set — configured will fail on token lookup, but account check must pass first
 	// So error should be about token, not about account mismatch
 	o := &options{}
-	_, err := resolveServeTarget(o, "real", "myserver")
-	if err == nil {
+	_, resolveErr := resolveServeTarget(o, "real", "myserver")
+	if resolveErr == nil {
 		t.Fatal("expected token error, got nil")
 	}
-	if err.Error() == `server "myserver" belongs to account "real"` || err.Error() == `server "myserver" is not configured` {
-		t.Fatalf("account check should have passed, got %v", err)
+	if resolveErr.Error() == `server "myserver" belongs to account "real"` || resolveErr.Error() == `server "myserver" is not configured` {
+		t.Fatalf("account check should have passed, got %v", resolveErr)
 	}
 }
