@@ -4,11 +4,11 @@
 provides safe, scriptable server inspection and health checks while preserving a
 raw read-only API escape hatch for the broad PMS API surface.
 
-The current release is a CLI/client, not an MCP server or HTTP service. Its
-health package is intentionally separated from the CLI so a small, local HTTP
-adapter can be added for external monitors such as Uptime Kuma without
-duplicating Plex authentication, resource discovery, connection selection, or
-health classification.
+`plexctl` ships a Go CLI, reusable client, and a local HTTP monitoring adapter
+(`plexctl serve`). It is not an MCP server. Its health package is separated
+from the CLI so the adapter reuses Plex authentication, resource discovery,
+connection selection, and health classification without duplication — see
+`docs/monitoring.md` for the Uptime Kuma integration.
 
 ## Install
 
@@ -60,6 +60,7 @@ normal certificate verification.
 - `sessions history [--account-id ID] [--section-id ID] [--sort EXPR] [--viewed-at TIME] [--metadata-id ID]` — playback history.
 - `health ping` — bounded identity liveness check.
 - `health check` — identity plus library-access check.
+- `serve --listen ADDR` — local HTTP adapter for Uptime Kuma (`GET /plex/<account>/<server>` → 200/503 JSON with classification).
 - `api GET /path` — read-only access to any PMS endpoint.
 
 Read commands accept `--json`, `--server`, and `--timeout`, and every request
