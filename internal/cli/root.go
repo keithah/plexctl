@@ -11,10 +11,12 @@ import (
 	"github.com/keithah/plexctl/internal/authstore"
 	"github.com/keithah/plexctl/internal/config"
 	"github.com/keithah/plexctl/internal/health"
+	"github.com/keithah/plexctl/internal/monitor"
 	"github.com/keithah/plexctl/internal/plexauth"
 	"github.com/keithah/plexctl/internal/pms"
 	"github.com/spf13/cobra"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -36,7 +38,7 @@ func NewRoot() *cobra.Command {
 	root.PersistentFlags().StringVar(&o.server, "server", "", "configured server name")
 	root.PersistentFlags().BoolVar(&o.jsonOut, "json", false, "print JSON")
 	root.PersistentFlags().DurationVar(&o.timeout, "timeout", o.timeout, "request timeout")
-	root.AddCommand(configCmd(), authCmd(), accountsCmd(), serversCmd(), serverCmd(o), libraryCmd(o), metadataCmd(o), sessionsCmd(o), playlistsCmd(o), collectionsCmd(o), queuesCmd(o), transcodeCmd(o), healthCmd(o), apiCmd(o))
+	root.AddCommand(configCmd(), authCmd(), accountsCmd(), serversCmd(), serverCmd(o), libraryCmd(o), metadataCmd(o), sessionsCmd(o), playlistsCmd(o), collectionsCmd(o), queuesCmd(o), transcodeCmd(o), healthCmd(o), serveCmd(o), apiCmd(o))
 	return root
 }
 func Execute() {
@@ -859,6 +861,28 @@ func healthCmd(o *options) *cobra.Command {
 		}
 		return nil
 	}})
+	return cmd
+}
+func serveCmd(o *options) *cobra.Command {
+	var listen string
+	cmd := &cobra.Command{Use: "serve", Short: "Serve HTTP health endpoints for Uptime Kuma", RunE: func(*cobra.Command, []string) error {
+		h := monitor.Handler{Timeout: o.timeout, Resolve: func(account, server string) (*pms.Client, error) {
+			c, err := config.Load(config.Path())
+			if err != nil {
+				return nil, err
+			}
+			if p, ok := c.ServersV2[server]; ok && p.Account != account {
+				return nil, fmt.Errorf("server %q belongs to account %q", server, p.Account)
+			}
+			copy := *o
+			copy.server = server
+			return configured(&copy)
+		}}
+		s := &http.Server{Addr: listen, Handler: h}
+		fmt.Fprintf(os.Stderr, "plexctl monitoring adapter listening on %s\n", listen)
+		return s.ListenAndServe()
+	}}
+	cmd.Flags().StringVar(&listen, "listen", "127.0.0.1:3002", "HTTP listen address")
 	return cmd
 }
 func apiCmd(o *options) *cobra.Command {
