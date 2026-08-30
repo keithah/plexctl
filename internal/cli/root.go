@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -191,6 +193,7 @@ func authCmd() *cobra.Command {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
 		p := plexauth.New("https://plex.tv", "plexctl", nil)
+		p.OnWarning = func(msg string) { fmt.Fprintln(os.Stderr, "warning:", msg) }
 		p.OnPIN = func(link string) {
 			fmt.Printf("Open %s to authorize plexctl.\n", link)
 			if runtime.GOOS == "darwin" {
@@ -235,10 +238,7 @@ func authCmd() *cobra.Command {
 			if conn.URI == "" {
 				continue
 			}
-			id := r.ClientIdentifier
-			if id == "" {
-				id = fmt.Sprintf("%s-%d", name, i)
-			}
+			id := profileKey(name, r, i)
 			tokenKey := key
 			if r.AccessToken != "" {
 				tokenKey = "server/" + name + "/" + id
@@ -384,12 +384,22 @@ func orderedConnections(conns []plexauth.Connection) []plexauth.Connection {
 	return ordered
 }
 
-func bestConnection(conns []plexauth.Connection) plexauth.Connection {
-	if ordered := orderedConnections(conns); len(ordered) > 0 {
-		return ordered[0]
+// profileKey identifies a discovered server profile. Plex's machine identifier
+// is used whenever it is present. The fallback must not depend on discovery
+// order, because a reordered resources response would otherwise overwrite an
+// unrelated profile on the next login.
+func profileKey(account string, r plexauth.Resource, _ int) string {
+	if r.ClientIdentifier != "" {
+		return r.ClientIdentifier
 	}
-	return plexauth.Connection{}
+	seed := account + "\x00" + r.Name
+	for _, c := range r.Connections {
+		seed += "\x00" + c.URI
+	}
+	sum := sha256.Sum256([]byte(seed))
+	return fmt.Sprintf("%s-%s", account, hex.EncodeToString(sum[:])[:12])
 }
+
 func printAccounts(c config.Config) {
 	names := make([]string, 0, len(c.Accounts))
 	for name := range c.Accounts {

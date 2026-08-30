@@ -42,15 +42,17 @@ func Ping(ctx context.Context, c *pms.Client) Result {
 	start := time.Now()
 	_, e := c.Identity(ctx)
 	r := Result{OK: e == nil, Classification: OK, Stage: "identity", Duration: time.Since(start)}
-	if e != nil {
-		r.Classification = IdentityFailure
-		if isAuthFailure(e) {
-			r.Classification = AuthFailure
-		}
-		r.Detail = e.Error()
+	if e == nil {
+		// The call succeeded. A context that expired afterwards must not
+		// relabel a healthy server as unreachable.
+		return r
 	}
+	r.Classification = IdentityFailure
+	if isAuthFailure(e) {
+		r.Classification = AuthFailure
+	}
+	r.Detail = e.Error()
 	if ctx.Err() != nil {
-		r.OK = false
 		r.Classification = Timeout
 		r.Detail = ctx.Err().Error()
 	}

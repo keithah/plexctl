@@ -22,6 +22,10 @@ type Client struct {
 	PollInterval time.Duration
 	Timeout      time.Duration
 	OnPIN        func(string)
+	// OnWarning, when set, receives non-fatal discovery problems that would
+	// otherwise be discarded, such as a legacy endpoint that failed before the
+	// JSON fallback succeeded.
+	OnWarning func(string)
 }
 
 type LoginResult struct {
@@ -126,15 +130,26 @@ func (c *Client) User(ctx context.Context, token string) (User, error) {
 	return v, err
 }
 func (c *Client) Resources(ctx context.Context, token string) ([]Resource, error) {
-	if resources, err := c.legacyResources(ctx, token); err == nil && len(resources) > 0 {
+	resources, err := c.legacyResources(ctx, token)
+	if err != nil {
+		// The JSON endpoint below is authoritative, so a legacy failure is not
+		// fatal. Surface it instead of discarding it, otherwise a broken legacy
+		// path looks identical to an account with no servers.
+		c.warn(fmt.Sprintf("legacy Plex resource discovery failed, falling back to the JSON API: %v", err))
+	} else if len(resources) > 0 {
 		return onlyServers(resources), nil
 	}
 	var v []Resource
-	err := c.getJSON(ctx, "/api/v2/resources", token, &v)
-	if err != nil {
+	if err := c.getJSON(ctx, "/api/v2/resources", token, &v); err != nil {
 		return nil, err
 	}
 	return onlyServers(v), nil
+}
+
+func (c *Client) warn(msg string) {
+	if c.OnWarning != nil {
+		c.OnWarning(msg)
+	}
 }
 
 // onlyServers keeps resources that advertise the "server" capability. A Plex

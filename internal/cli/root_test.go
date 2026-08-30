@@ -127,17 +127,6 @@ func TestDownloadQueueCommandsAcceptDocumentedArguments(t *testing.T) {
 	}
 }
 
-func TestBestConnectionPrefersLocalDirect(t *testing.T) {
-	got := bestConnection([]plexauth.Connection{
-		{URI: "http://172.18.0.2:32400", Local: true},
-		{URI: "http://203.0.113.10:32400", Local: false},
-		{URI: "https://relay.plex.tv", Relay: true},
-	})
-	if got.URI != "http://172.18.0.2:32400" {
-		t.Fatalf("selected %q, want local direct connection", got.URI)
-	}
-}
-
 func TestNormalizeDiscoveredConnectionUsesHTTPSForRemoteHTTP(t *testing.T) {
 	got := normalizeDiscoveredConnection(plexauth.Connection{URI: "http://203.0.113.10:32400"})
 	if got.URL != "https://203.0.113.10:32400" || !got.InsecureTLS {

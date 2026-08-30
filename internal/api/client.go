@@ -132,13 +132,14 @@ func (c *Client) DoRaw(ctx context.Context, method, path string, query url.Value
 	return data, nil
 }
 func safeDetail(b []byte, token string) string {
-	s := string(b)
-	if len(s) > 300 {
-		s = s[:300] + "…"
-	}
-	s = strings.ReplaceAll(s, "X-Plex-Token", "[redacted]")
+	// Redact before truncating. Truncating first can split the token across the
+	// boundary, leaving an unredacted prefix that no longer matches the needle.
+	s := strings.ReplaceAll(string(b), "X-Plex-Token", "[redacted]")
 	if token != "" {
 		s = strings.ReplaceAll(s, token, "[redacted]")
+	}
+	if len(s) > 300 {
+		s = s[:300] + "…"
 	}
 	return s
 }
