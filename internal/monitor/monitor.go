@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -33,16 +32,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "monitor target not found")
 		return
 	}
-	account, err := url.PathUnescape(parts[1])
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "bad_request", "invalid account path")
-		return
-	}
-	server, err := url.PathUnescape(parts[2])
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "bad_request", "invalid server path")
-		return
-	}
+	account, server := parts[1], parts[2]
 	if h.Resolve == nil {
 		writeError(w, http.StatusInternalServerError, "configuration", "monitor resolver is not configured")
 		return
@@ -50,6 +40,10 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	client, err := h.Resolve(account, server)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "configuration", err.Error())
+		return
+	}
+	if client == nil {
+		writeError(w, http.StatusInternalServerError, "configuration", "monitor resolver returned nil client")
 		return
 	}
 	ctx := r.Context()
@@ -89,5 +83,5 @@ type errorResponse struct {
 
 func writeError(w http.ResponseWriter, status int, classification, detail string) {
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(errorResponse{Classification: classification, Detail: detail})
+	_ = json.NewEncoder(w).Encode(errorResponse{OK: false, Classification: classification, Detail: detail})
 }

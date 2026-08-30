@@ -867,16 +867,7 @@ func serveCmd(o *options) *cobra.Command {
 	var listen string
 	cmd := &cobra.Command{Use: "serve", Short: "Serve HTTP health endpoints for Uptime Kuma", RunE: func(*cobra.Command, []string) error {
 		h := monitor.Handler{Timeout: o.timeout, Resolve: func(account, server string) (*pms.Client, error) {
-			c, err := config.Load(config.Path())
-			if err != nil {
-				return nil, err
-			}
-			if p, ok := c.ServersV2[server]; ok && p.Account != account {
-				return nil, fmt.Errorf("server %q belongs to account %q", server, p.Account)
-			}
-			copy := *o
-			copy.server = server
-			return configured(&copy)
+			return resolveServeTarget(o, account, server)
 		}}
 		s := &http.Server{Addr: listen, Handler: h}
 		fmt.Fprintf(os.Stderr, "plexctl monitoring adapter listening on %s\n", listen)
@@ -884,6 +875,23 @@ func serveCmd(o *options) *cobra.Command {
 	}}
 	cmd.Flags().StringVar(&listen, "listen", "127.0.0.1:3002", "HTTP listen address")
 	return cmd
+}
+
+func resolveServeTarget(o *options, account, server string) (*pms.Client, error) {
+	c, err := config.Load(config.Path())
+	if err != nil {
+		return nil, err
+	}
+	p, ok := c.ServersV2[server]
+	if !ok {
+		return nil, fmt.Errorf("server %q is not configured", server)
+	}
+	if p.Account != account {
+		return nil, fmt.Errorf("server %q belongs to account %q", server, p.Account)
+	}
+	copy := *o
+	copy.server = server
+	return configured(&copy)
 }
 func apiCmd(o *options) *cobra.Command {
 	cmd := &cobra.Command{Use: "api METHOD PATH", Args: cobra.ExactArgs(2), RunE: func(_ *cobra.Command, a []string) error {
