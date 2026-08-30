@@ -13,9 +13,29 @@ type Server struct {
 	TokenEnv    string `json:"token_env"`
 	InsecureTLS bool   `json:"insecure_tls,omitempty"`
 }
+type Account struct {
+	Username string `json:"username"`
+	Email    string `json:"email,omitempty"`
+	PlexID   int    `json:"plex_id,omitempty"`
+	TokenKey string `json:"token_key"`
+}
+type ServerProfile struct {
+	Account           string `json:"account"`
+	Name              string `json:"name"`
+	MachineIdentifier string `json:"machine_identifier,omitempty"`
+	TokenKey          string `json:"token_key,omitempty"`
+	URL               string `json:"url"`
+	InsecureTLS       bool   `json:"insecure_tls,omitempty"`
+	Local             bool   `json:"local,omitempty"`
+	Relay             bool   `json:"relay,omitempty"`
+}
 type Config struct {
-	Current string            `json:"current,omitempty"`
-	Servers map[string]Server `json:"servers"`
+	Current        string                   `json:"current,omitempty"`
+	Servers        map[string]Server        `json:"servers"`
+	CurrentAccount string                   `json:"current_account,omitempty"`
+	CurrentServer  string                   `json:"current_server,omitempty"`
+	Accounts       map[string]Account       `json:"accounts,omitempty"`
+	ServersV2      map[string]ServerProfile `json:"server_profiles,omitempty"`
 }
 
 func Path() string {
@@ -29,7 +49,7 @@ func Load(path string) (Config, error) {
 	var c Config
 	b, e := os.ReadFile(path)
 	if errors.Is(e, os.ErrNotExist) {
-		return Config{Servers: map[string]Server{}}, nil
+		return Config{Servers: map[string]Server{}, Accounts: map[string]Account{}, ServersV2: map[string]ServerProfile{}}, nil
 	}
 	if e != nil {
 		return c, e
@@ -37,6 +57,12 @@ func Load(path string) (Config, error) {
 	e = json.Unmarshal(b, &c)
 	if c.Servers == nil {
 		c.Servers = map[string]Server{}
+	}
+	if c.Accounts == nil {
+		c.Accounts = map[string]Account{}
+	}
+	if c.ServersV2 == nil {
+		c.ServersV2 = map[string]ServerProfile{}
 	}
 	return c, e
 }
@@ -48,14 +74,32 @@ func Save(path string, c Config) error {
 	if e != nil {
 		return e
 	}
-	tmp := path + ".tmp"
-	if e = os.WriteFile(tmp, append(b, '\n'), 0600); e != nil {
-		return e
+	b = append(b, '\n')
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, "config-*.tmp")
+	if err != nil {
+		return err
 	}
-	if e = os.Chmod(tmp, 0600); e != nil {
-		return e
+	tmp := f.Name()
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		_ = os.Remove(tmp)
+		return err
 	}
-	return os.Rename(tmp, path)
+	if err := f.Chmod(0600); err != nil {
+		f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 func (c Config) Resolve(name string) (string, Server, error) {
 	if name == "" {

@@ -2,9 +2,12 @@ package health
 
 import (
 	"context"
-	"fmt"
-	"github.com/keithah/plexctl/internal/pms"
+	"errors"
+	"net/http"
 	"time"
+
+	"github.com/keithah/plexctl/internal/api"
+	"github.com/keithah/plexctl/internal/pms"
 )
 
 type Classification string
@@ -25,16 +28,31 @@ type Result struct {
 	Duration       time.Duration  `json:"duration"`
 }
 
+// isAuthFailure reports whether err is a PMS rejection of the credentials,
+// which is actionable in a different way from an unreachable server.
+func isAuthFailure(err error) bool {
+	var he *api.HTTPError
+	if !errors.As(err, &he) {
+		return false
+	}
+	return he.StatusCode == http.StatusUnauthorized || he.StatusCode == http.StatusForbidden
+}
+
 func Ping(ctx context.Context, c *pms.Client) Result {
 	start := time.Now()
 	_, e := c.Identity(ctx)
 	r := Result{OK: e == nil, Classification: OK, Stage: "identity", Duration: time.Since(start)}
-	if e != nil {
-		r.Classification = IdentityFailure
-		r.Detail = e.Error()
+	if e == nil {
+		// The call succeeded. A context that expired afterwards must not
+		// relabel a healthy server as unreachable.
+		return r
 	}
+	r.Classification = IdentityFailure
+	if isAuthFailure(e) {
+		r.Classification = AuthFailure
+	}
+	r.Detail = e.Error()
 	if ctx.Err() != nil {
-		r.OK = false
 		r.Classification = Timeout
 		r.Detail = ctx.Err().Error()
 	}
@@ -47,11 +65,14 @@ func Check(ctx context.Context, c *pms.Client) Result {
 	}
 	if _, e := c.Sections(ctx); e != nil {
 		r := Result{OK: false, Classification: LibraryFailure, Stage: "library", Detail: e.Error(), Duration: time.Since(start)}
+		if isAuthFailure(e) {
+			r.Classification = AuthFailure
+		}
 		if ctx.Err() != nil {
 			r.Classification = Timeout
 			r.Detail = ctx.Err().Error()
 		}
 		return r
 	}
-	return Result{OK: true, Classification: OK, Stage: "library", Detail: fmt.Sprintf("identity and library access verified"), Duration: time.Since(start)}
+	return Result{OK: true, Classification: OK, Stage: "library", Detail: "identity and library access verified", Duration: time.Since(start)}
 }

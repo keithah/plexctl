@@ -2,16 +2,25 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/keithah/plexctl/internal/api"
+	"github.com/keithah/plexctl/internal/authstore"
 	"github.com/keithah/plexctl/internal/config"
 	"github.com/keithah/plexctl/internal/health"
+	"github.com/keithah/plexctl/internal/plexauth"
 	"github.com/keithah/plexctl/internal/pms"
 	"github.com/spf13/cobra"
+	"net"
 	"net/url"
 	"os"
-	"strconv"
+	"os/exec"
+	"runtime"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -27,7 +36,7 @@ func NewRoot() *cobra.Command {
 	root.PersistentFlags().StringVar(&o.server, "server", "", "configured server name")
 	root.PersistentFlags().BoolVar(&o.jsonOut, "json", false, "print JSON")
 	root.PersistentFlags().DurationVar(&o.timeout, "timeout", o.timeout, "request timeout")
-	root.AddCommand(configCmd(), serverCmd(o), libraryCmd(o), metadataCmd(o), sessionsCmd(o), healthCmd(o), apiCmd(o))
+	root.AddCommand(configCmd(), authCmd(), accountsCmd(), serversCmd(), serverCmd(o), libraryCmd(o), metadataCmd(o), sessionsCmd(o), playlistsCmd(o), collectionsCmd(o), queuesCmd(o), transcodeCmd(o), healthCmd(o), apiCmd(o))
 	return root
 }
 func Execute() {
@@ -41,24 +50,81 @@ func configured(o *options) (*pms.Client, error) {
 	if e != nil {
 		return nil, e
 	}
-	_, s, e := c.Resolve(o.server)
-	if e != nil {
-		return nil, e
+	var s config.Server
+	var token string
+	if len(c.ServersV2) > 0 && (o.server != "" || c.CurrentServer != "") {
+		name := o.server
+		if name == "" {
+			name = c.CurrentServer
+		}
+		p, ok := c.ServersV2[name]
+		if ok {
+			if a, ok := c.Accounts[p.Account]; ok {
+				key := p.TokenKey
+				if key == "" {
+					key = a.TokenKey
+				}
+				token, e = authstore.Get(key)
+			} else {
+				e = fmt.Errorf("account %q is not configured", p.Account)
+			}
+			if e != nil {
+				return nil, e
+			}
+			s = config.Server{URL: p.URL, InsecureTLS: p.InsecureTLS}
+		} else {
+			_, s, e = c.Resolve(name)
+			if e != nil {
+				return nil, e
+			}
+			token, e = tokenFromEnv(s)
+			if e != nil {
+				return nil, e
+			}
+		}
+	} else {
+		_, s, e = c.Resolve(o.server)
+		if e != nil {
+			return nil, e
+		}
+		token, e = tokenFromEnv(s)
+		if e != nil {
+			return nil, e
+		}
 	}
+	return newPMSClient(s, token)
+}
+
+func tokenFromEnv(s config.Server) (string, error) {
 	token := os.Getenv(s.TokenEnv)
 	if s.TokenEnv != "" && token == "" {
-		return nil, fmt.Errorf("token environment variable %q is not set", s.TokenEnv)
+		return "", fmt.Errorf("token environment variable %q is not set", s.TokenEnv)
 	}
+	return token, nil
+}
+
+func newPMSClient(s config.Server, token string) (*pms.Client, error) {
 	a, e := api.New(s.URL, token, nil)
 	if e != nil {
 		return nil, e
 	}
-	a.InsecureTLS = s.InsecureTLS
+	a.SetInsecureTLS(s.InsecureTLS)
 	return pms.New(a), nil
+}
+func commandContext(o *options) (context.Context, context.CancelFunc) {
+	if o.timeout <= 0 {
+		return context.WithCancel(context.Background())
+	}
+	return context.WithTimeout(context.Background(), o.timeout)
 }
 func printValue(v any, jsonOut bool) {
 	if jsonOut {
-		b, _ := json.MarshalIndent(v, "", "  ")
+		b, err := json.MarshalIndent(v, "", "  ")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "marshal output: %v\n", err)
+			fmt.Printf("%+v\n", v)
+			return
+		}
 		fmt.Println(string(b))
 		return
 	}
@@ -83,8 +149,13 @@ func configCmd() *cobra.Command {
 		if e != nil {
 			return e
 		}
-		for n, s := range c.Servers {
-			fmt.Printf("%s\t%s\n", n, s.URL)
+		names := make([]string, 0, len(c.Servers))
+		for n := range c.Servers {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			fmt.Printf("%s	%s\n", n, c.Servers[n].URL)
 		}
 		return nil
 	}})
@@ -114,14 +185,351 @@ func configCmd() *cobra.Command {
 	}})
 	return cmd
 }
+
+func authCmd() *cobra.Command {
+	var accountName string
+	cmd := &cobra.Command{Use: "auth", Short: "Authenticate Plex accounts"}
+	login := &cobra.Command{Use: "login", Short: "Authenticate an account and discover its servers", RunE: func(*cobra.Command, []string) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		p := plexauth.New("https://plex.tv", "plexctl", nil)
+		p.OnWarning = func(msg string) { fmt.Fprintln(os.Stderr, "warning:", msg) }
+		p.OnPIN = func(link string) {
+			fmt.Printf("Open %s to authorize plexctl.\n", link)
+			if runtime.GOOS == "darwin" {
+				_ = exec.Command("open", link).Start()
+			}
+		}
+		result, err := p.Login(ctx)
+		if err != nil {
+			return err
+		}
+		u, err := p.User(ctx, result.Token)
+		if err != nil {
+			return err
+		}
+		name := accountName
+		if name == "" {
+			name = u.Username
+		}
+		if name == "" {
+			return errors.New("plex account has no username; provide --name")
+		}
+		resources, err := p.Resources(ctx, result.Token)
+		if err != nil {
+			return err
+		}
+		c, err := config.Load(config.Path())
+		if err != nil {
+			return err
+		}
+		key := "account/" + name
+		if err := authstore.Set(key, result.Token); err != nil {
+			return fmt.Errorf("store Plex token: %w", err)
+		}
+		c.Accounts[name] = config.Account{Username: u.Username, Email: u.Email, PlexID: u.ID, TokenKey: key}
+		savedServers := 0
+		for i, r := range resources {
+			conn, err := validatedConnection(ctx, r, result.Token)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Skipping %s: %v\n", r.Name, err)
+				continue
+			}
+			if conn.URI == "" {
+				continue
+			}
+			id := profileKey(name, r, i)
+			tokenKey := key
+			if r.AccessToken != "" {
+				tokenKey = "server/" + name + "/" + id
+				if err := authstore.Set(tokenKey, r.AccessToken); err != nil {
+					return fmt.Errorf("store Plex server token: %w", err)
+				}
+			}
+			normalized := normalizeDiscoveredConnection(conn)
+			c.ServersV2[id] = config.ServerProfile{Account: name, Name: r.Name, MachineIdentifier: r.ClientIdentifier, TokenKey: tokenKey, URL: normalized.URL, InsecureTLS: normalized.InsecureTLS, Local: conn.Local, Relay: conn.Relay}
+			if c.CurrentServer == "" {
+				c.CurrentServer = id
+			}
+			savedServers++
+		}
+		if c.CurrentAccount == "" {
+			c.CurrentAccount = name
+		}
+		if err := config.Save(config.Path(), c); err != nil {
+			return err
+		}
+		fmt.Printf("Authenticated %s; discovered %d Plex servers.\n", name, savedServers)
+		return nil
+	}}
+	login.Flags().StringVar(&accountName, "name", "", "local account name (defaults to Plex username)")
+	cmd.AddCommand(login)
+	cmd.AddCommand(&cobra.Command{Use: "logout ACCOUNT", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, a []string) error {
+		c, e := config.Load(config.Path())
+		if e != nil {
+			return e
+		}
+		ac, ok := c.Accounts[a[0]]
+		if !ok {
+			return fmt.Errorf("account %q is not configured", a[0])
+		}
+		var errs []string
+		if err := authstore.Delete(ac.TokenKey); err != nil {
+			errs = append(errs, fmt.Sprintf("account token %q: %v", ac.TokenKey, err))
+		} else {
+			delete(c.Accounts, a[0])
+		}
+		for id, s := range c.ServersV2 {
+			if s.Account == a[0] {
+				if s.TokenKey != "" && s.TokenKey != ac.TokenKey {
+					if err := authstore.Delete(s.TokenKey); err != nil {
+						errs = append(errs, fmt.Sprintf("server %q token %q: %v", id, s.TokenKey, err))
+						continue
+					}
+				}
+				delete(c.ServersV2, id)
+			}
+		}
+		if len(errs) > 0 {
+			// Persist partial deletions so remaining profiles reflect what was actually removed,
+			// but surface the failure instead of reporting success with orphaned credentials.
+			_ = config.Save(config.Path(), c)
+			return fmt.Errorf("logout partially failed: %s", strings.Join(errs, "; "))
+		}
+		if c.CurrentAccount == a[0] {
+			c.CurrentAccount = ""
+			c.CurrentServer = ""
+		}
+		return config.Save(config.Path(), c)
+	}})
+	return cmd
+}
+
+type normalizedConnection struct {
+	URL         string
+	InsecureTLS bool
+}
+
+func normalizeDiscoveredConnection(conn plexauth.Connection) normalizedConnection {
+	normalizedURL := conn.URI
+	insecureTLS := false
+	if !conn.Local && !conn.Relay {
+		if strings.HasPrefix(normalizedURL, "http://") {
+			normalizedURL = "https://" + strings.TrimPrefix(normalizedURL, "http://")
+		}
+		// A certificate can never match a bare IP literal, so verification must be
+		// disabled for IP-literal remote endpoints regardless of the discovered
+		// scheme. Hostname endpoints (including *.plex.direct) keep verification.
+		if strings.HasPrefix(normalizedURL, "https://") {
+			if parsed, err := url.Parse(normalizedURL); err == nil {
+				insecureTLS = net.ParseIP(parsed.Hostname()) != nil
+			}
+		}
+	}
+	return normalizedConnection{URL: normalizedURL, InsecureTLS: insecureTLS}
+}
+
+func validatedConnection(ctx context.Context, resource plexauth.Resource, accountToken string) (plexauth.Connection, error) {
+	candidates := append([]plexauth.Connection(nil), resource.Connections...)
+	ordered := orderedConnections(candidates)
+	if len(ordered) == 0 {
+		return plexauth.Connection{}, fmt.Errorf("no connections discovered")
+	}
+	token := resource.AccessToken
+	if token == "" {
+		token = accountToken
+	}
+	for _, candidate := range ordered {
+		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		normalized := normalizeDiscoveredConnection(candidate)
+		a, err := api.New(normalized.URL, token, nil)
+		if err != nil {
+			cancel()
+			continue
+		}
+		a.SetInsecureTLS(normalized.InsecureTLS)
+		identity, err := pms.New(a).Identity(probeCtx)
+		cancel()
+		if err == nil && identity.MediaContainer.MachineIdentifier == resource.ClientIdentifier {
+			return candidate, nil
+		}
+	}
+	return plexauth.Connection{}, fmt.Errorf("no reachable connection matched machine identifier")
+}
+
+// orderedConnections ranks every candidate by the documented preference:
+// local direct, then remote direct, then relay. Ranking the whole slice (rather
+// than only picking a single preferred entry) keeps the fallback chain in
+// preference order, so a relay is never probed before an untried direct
+// connection. Order within a tier is preserved as discovered.
+func orderedConnections(conns []plexauth.Connection) []plexauth.Connection {
+	tiers := [3][]plexauth.Connection{}
+	for _, c := range conns {
+		if c.URI == "" {
+			continue
+		}
+		switch {
+		case c.Relay:
+			tiers[2] = append(tiers[2], c)
+		case c.Local:
+			tiers[0] = append(tiers[0], c)
+		default:
+			tiers[1] = append(tiers[1], c)
+		}
+	}
+	ordered := make([]plexauth.Connection, 0, len(conns))
+	for _, tier := range tiers {
+		ordered = append(ordered, tier...)
+	}
+	return ordered
+}
+
+// profileKey identifies a discovered server profile. Plex's machine identifier
+// is used whenever it is present. The fallback must not depend on discovery
+// order, because a reordered resources response would otherwise overwrite an
+// unrelated profile on the next login.
+func profileKey(account string, r plexauth.Resource, _ int) string {
+	if r.ClientIdentifier != "" {
+		return r.ClientIdentifier
+	}
+	seed := account + "\x00" + r.Name
+	for _, c := range r.Connections {
+		seed += "\x00" + c.URI
+	}
+	sum := sha256.Sum256([]byte(seed))
+	return fmt.Sprintf("%s-%s", account, hex.EncodeToString(sum[:])[:12])
+}
+
+func printAccounts(c config.Config) {
+	names := make([]string, 0, len(c.Accounts))
+	for name := range c.Accounts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		a := c.Accounts[name]
+		mark := ""
+		if name == c.CurrentAccount {
+			mark = " *"
+		}
+		fmt.Printf("%s\t%s%s\n", name, a.Email, mark)
+	}
+}
+
+func accountsCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "accounts", Short: "List and select authenticated Plex accounts"}
+	cmd.RunE = func(*cobra.Command, []string) error {
+		c, e := config.Load(config.Path())
+		if e != nil {
+			return e
+		}
+		printAccounts(c)
+		return nil
+	}
+	cmd.AddCommand(&cobra.Command{Use: "list", RunE: func(*cobra.Command, []string) error {
+		c, e := config.Load(config.Path())
+		if e != nil {
+			return e
+		}
+		printAccounts(c)
+		return nil
+	}})
+	cmd.AddCommand(&cobra.Command{Use: "use ACCOUNT", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, a []string) error {
+		c, e := config.Load(config.Path())
+		if e != nil {
+			return e
+		}
+		if _, ok := c.Accounts[a[0]]; !ok {
+			return fmt.Errorf("account %q is not configured", a[0])
+		}
+		c.CurrentAccount = a[0]
+		var ids []string
+		for id, s := range c.ServersV2 {
+			if s.Account == a[0] {
+				ids = append(ids, id)
+			}
+		}
+		if len(ids) > 0 {
+			sort.Strings(ids)
+			c.CurrentServer = ids[0]
+		}
+		return config.Save(config.Path(), c)
+	}})
+	return cmd
+}
+func printServers(c config.Config) {
+	ids := make([]string, 0, len(c.ServersV2))
+	for id := range c.ServersV2 {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		s := c.ServersV2[id]
+		mark := ""
+		if id == c.CurrentServer {
+			mark = " *"
+		}
+		fmt.Printf("%s\t%s\t%s\taccount=%s%s\n", id, s.Name, s.URL, s.Account, mark)
+	}
+}
+
+func serversCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "servers", Short: "List and select discovered Plex servers"}
+	cmd.RunE = func(*cobra.Command, []string) error {
+		c, e := config.Load(config.Path())
+		if e != nil {
+			return e
+		}
+		printServers(c)
+		return nil
+	}
+	cmd.AddCommand(&cobra.Command{Use: "list", RunE: func(*cobra.Command, []string) error {
+		c, e := config.Load(config.Path())
+		if e != nil {
+			return e
+		}
+		printServers(c)
+		return nil
+	}})
+	cmd.AddCommand(&cobra.Command{Use: "use SERVER", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, a []string) error {
+		c, e := config.Load(config.Path())
+		if e != nil {
+			return e
+		}
+		s, ok := c.ServersV2[a[0]]
+		if !ok {
+			return fmt.Errorf("server %q is not configured", a[0])
+		}
+		c.CurrentServer = a[0]
+		c.CurrentAccount = s.Account
+		return config.Save(config.Path(), c)
+	}})
+	return cmd
+}
+
 func serverCmd(o *options) *cobra.Command {
 	cmd := &cobra.Command{Use: "server"}
+	cmd.AddCommand(&cobra.Command{Use: "info", Short: "Show server configuration and capabilities", RunE: func(*cobra.Command, []string) error {
+		c, e := configured(o)
+		if e != nil {
+			return e
+		}
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		v, e := c.Info(ctx)
+		if e == nil {
+			printValue(v, o.jsonOut)
+		}
+		return e
+	}})
 	cmd.AddCommand(&cobra.Command{Use: "identity", RunE: func(*cobra.Command, []string) error {
 		c, e := configured(o)
 		if e != nil {
 			return e
 		}
-		v, e := c.Identity(context.Background())
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		v, e := c.Identity(ctx)
 		if e == nil {
 			printValue(v, o.jsonOut)
 		}
@@ -131,12 +539,16 @@ func serverCmd(o *options) *cobra.Command {
 }
 func libraryCmd(o *options) *cobra.Command {
 	cmd := &cobra.Command{Use: "library"}
+	var searchLimit, recentLimit int
+	var section string
 	cmd.AddCommand(&cobra.Command{Use: "list", RunE: func(*cobra.Command, []string) error {
 		c, e := configured(o)
 		if e != nil {
 			return e
 		}
-		v, e := c.Sections(context.Background())
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		v, e := c.Sections(ctx)
 		if e == nil {
 			if o.jsonOut {
 				printValue(v, o.jsonOut)
@@ -148,17 +560,62 @@ func libraryCmd(o *options) *cobra.Command {
 		}
 		return e
 	}})
-	cmd.AddCommand(&cobra.Command{Use: "items SECTION_KEY", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, a []string) error {
+	var itemSort string
+	var itemLimit int
+	items := &cobra.Command{Use: "items SECTION_KEY", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, a []string) error {
 		c, e := configured(o)
 		if e != nil {
 			return e
 		}
-		v, e := c.Items(context.Background(), a[0], url.Values{})
+		q := url.Values{}
+		if itemSort != "" {
+			q.Set("sort", itemSort)
+		}
+		if itemLimit > 0 {
+			q.Set("limit", fmt.Sprint(itemLimit))
+		}
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		v, e := c.Items(ctx, a[0], q)
 		if e == nil {
 			printValue(v, o.jsonOut)
 		}
 		return e
-	}})
+	}}
+	items.Flags().StringVar(&itemSort, "sort", "", "sort expression, for example titleSort:asc")
+	items.Flags().IntVar(&itemLimit, "limit", 0, "maximum number of items")
+	cmd.AddCommand(items)
+	search := &cobra.Command{Use: "search TERM", Short: "Search libraries via the documented hubs search endpoint", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, a []string) error {
+		c, e := configured(o)
+		if e != nil {
+			return e
+		}
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		v, e := c.Search(ctx, section, a[0], searchLimit)
+		if e == nil {
+			printValue(v, o.jsonOut)
+		}
+		return e
+	}}
+	search.Flags().StringVar(&section, "section", "", "restrict the search to one library section key")
+	search.Flags().IntVar(&searchLimit, "limit", 20, "maximum number of items")
+	cmd.AddCommand(search)
+	recent := &cobra.Command{Use: "recently-added SECTION_KEY", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, a []string) error {
+		c, e := configured(o)
+		if e != nil {
+			return e
+		}
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		v, e := c.RecentlyAdded(ctx, a[0], recentLimit)
+		if e == nil {
+			printValue(v, o.jsonOut)
+		}
+		return e
+	}}
+	recent.Flags().IntVar(&recentLimit, "limit", 20, "maximum number of items")
+	cmd.AddCommand(recent)
 	return cmd
 }
 func metadataCmd(o *options) *cobra.Command {
@@ -168,7 +625,22 @@ func metadataCmd(o *options) *cobra.Command {
 		if e != nil {
 			return e
 		}
-		v, e := c.Metadata(context.Background(), a[0])
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		v, e := c.Metadata(ctx, a[0])
+		if e == nil {
+			printValue(v, o.jsonOut)
+		}
+		return e
+	}})
+	cmd.AddCommand(&cobra.Command{Use: "children RATING_KEY", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, a []string) error {
+		c, e := configured(o)
+		if e != nil {
+			return e
+		}
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		v, e := c.Children(ctx, a[0])
 		if e == nil {
 			printValue(v, o.jsonOut)
 		}
@@ -177,17 +649,185 @@ func metadataCmd(o *options) *cobra.Command {
 	return cmd
 }
 func sessionsCmd(o *options) *cobra.Command {
-	return &cobra.Command{Use: "sessions", RunE: func(*cobra.Command, []string) error {
+	cmd := &cobra.Command{Use: "sessions"}
+	cmd.AddCommand(&cobra.Command{Use: "list", RunE: func(*cobra.Command, []string) error {
 		c, e := configured(o)
 		if e != nil {
 			return e
 		}
-		v, e := c.Sessions(context.Background())
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		v, e := c.Sessions(ctx)
+		if e == nil {
+			printValue(v, o.jsonOut)
+		}
+		return e
+	}})
+	var accountID, viewedAt, librarySectionID, metadataItemID, sortExpr string
+	history := &cobra.Command{Use: "history", RunE: func(*cobra.Command, []string) error {
+		c, e := configured(o)
+		if e != nil {
+			return e
+		}
+		q := url.Values{}
+		for key, value := range map[string]string{"accountID": accountID, "viewedAt": viewedAt, "librarySectionID": librarySectionID, "metadataItemID": metadataItemID, "sort": sortExpr} {
+			if value != "" {
+				q.Set(key, value)
+			}
+		}
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		v, e := c.History(ctx, q)
 		if e == nil {
 			printValue(v, o.jsonOut)
 		}
 		return e
 	}}
+	history.Flags().StringVar(&accountID, "account-id", "", "filter by Plex account ID")
+	history.Flags().StringVar(&viewedAt, "viewed-at", "", "filter by viewed-at timestamp")
+	history.Flags().StringVar(&librarySectionID, "section-id", "", "filter by library section ID")
+	history.Flags().StringVar(&metadataItemID, "metadata-id", "", "filter by metadata item ID")
+	history.Flags().StringVar(&sortExpr, "sort", "", "sort expression, for example viewedAt:desc")
+	cmd.AddCommand(history)
+	return cmd
+}
+func playlistsCmd(o *options) *cobra.Command {
+	cmd := &cobra.Command{Use: "playlists"}
+	cmd.AddCommand(&cobra.Command{Use: "list", Short: "List playlists", RunE: func(*cobra.Command, []string) error {
+		c, e := configured(o)
+		if e != nil {
+			return e
+		}
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		v, e := c.Playlists(ctx)
+		if e == nil {
+			printValue(v, o.jsonOut)
+		}
+		return e
+	}})
+	for _, spec := range []struct {
+		use, short string
+		run        func(*pms.Client, context.Context, string) (any, error)
+	}{
+		{"get PLAYLIST_ID", "Get a playlist", func(c *pms.Client, ctx context.Context, id string) (any, error) { return c.Playlist(ctx, id) }},
+		{"items PLAYLIST_ID", "List playlist items", func(c *pms.Client, ctx context.Context, id string) (any, error) { return c.PlaylistItems(ctx, id) }},
+	} {
+		s := spec
+		cmd.AddCommand(&cobra.Command{Use: s.use, Short: s.short, Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, a []string) error {
+			c, e := configured(o)
+			if e != nil {
+				return e
+			}
+			ctx, cancel := commandContext(o)
+			defer cancel()
+			v, e := s.run(c, ctx, a[0])
+			if e == nil {
+				printValue(v, o.jsonOut)
+			}
+			return e
+		}})
+	}
+	return cmd
+}
+func collectionsCmd(o *options) *cobra.Command {
+	cmd := &cobra.Command{Use: "collections"}
+	for _, spec := range []struct {
+		use, short string
+		run        func(*pms.Client, context.Context, string) (any, error)
+	}{
+		{"list SECTION_ID", "List collections in a library section", func(c *pms.Client, ctx context.Context, id string) (any, error) { return c.Collections(ctx, id) }},
+		{"items COLLECTION_ID", "List items in a collection", func(c *pms.Client, ctx context.Context, id string) (any, error) { return c.CollectionItems(ctx, id) }},
+	} {
+		s := spec
+		cmd.AddCommand(&cobra.Command{Use: s.use, Short: s.short, Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, a []string) error {
+			c, e := configured(o)
+			if e != nil {
+				return e
+			}
+			ctx, cancel := commandContext(o)
+			defer cancel()
+			v, e := s.run(c, ctx, a[0])
+			if e == nil {
+				printValue(v, o.jsonOut)
+			}
+			return e
+		}})
+	}
+	return cmd
+}
+func queuesCmd(o *options) *cobra.Command {
+	cmd := &cobra.Command{Use: "download-queues"}
+	for _, spec := range []struct {
+		use, short string
+		run        func(*pms.Client, context.Context, []string) (any, error)
+	}{
+		{"get QUEUE_ID", "Get a download queue", func(c *pms.Client, x context.Context, a []string) (any, error) { return c.DownloadQueue(x, a[0]) }},
+		{"items QUEUE_ID", "List download queue items", func(c *pms.Client, x context.Context, a []string) (any, error) { return c.DownloadQueueItems(x, a[0]) }},
+		{"item QUEUE_ID ITEM_ID", "Get one download queue item", func(c *pms.Client, x context.Context, a []string) (any, error) {
+			return c.DownloadQueueItem(x, a[0], a[1])
+		}},
+		{"decision QUEUE_ID ITEM_ID", "Get a queue item decision", func(c *pms.Client, x context.Context, a []string) (any, error) {
+			return c.DownloadQueueDecision(x, a[0], a[1])
+		}},
+	} {
+		s := spec
+		n := len(strings.Fields(s.use)) - 1
+		cmd.AddCommand(&cobra.Command{Use: s.use, Short: s.short, Args: cobra.ExactArgs(n), RunE: func(_ *cobra.Command, a []string) error {
+			c, e := configured(o)
+			if e != nil {
+				return e
+			}
+			x, cancel := commandContext(o)
+			defer cancel()
+			v, e := s.run(c, x, a)
+			if e == nil {
+				printValue(v, o.jsonOut)
+			}
+			return e
+		}})
+	}
+	return cmd
+}
+func transcodeCmd(o *options) *cobra.Command {
+	cmd := &cobra.Command{Use: "transcode"}
+	for _, name := range []string{"decision", "subtitles"} {
+		n := name
+		var params []string
+		c := &cobra.Command{Use: n + " TYPE SESSION_ID", Short: "Read universal transcode " + n, Args: cobra.ExactArgs(2), RunE: func(_ *cobra.Command, a []string) error {
+			q := url.Values{}
+			for _, p := range params {
+				k, v, ok := strings.Cut(p, "=")
+				if !ok || k == "" {
+					return fmt.Errorf("parameter must be key=value: %q", p)
+				}
+				q.Add(k, v)
+			}
+			client, e := configured(o)
+			if e != nil {
+				return e
+			}
+			x, cancel := commandContext(o)
+			defer cancel()
+			if n == "decision" {
+				v, e := client.TranscodeDecision(x, a[0], a[1], q)
+				if e == nil {
+					printValue(v, o.jsonOut)
+				}
+				return e
+			}
+			v, e := client.TranscodeSubtitles(x, a[0], a[1], q)
+			if e == nil && v != "" {
+				// Subtitles are WebVTT text, so print verbatim rather than
+				// through the JSON/struct formatter.
+				fmt.Println(strings.TrimRight(v, "\n"))
+			}
+			return e
+		}}
+		c.Flags().StringArrayVar(&params, "param", nil, "transcode query parameter key=value (repeatable)")
+		cmd.AddCommand(c)
+	}
+	return cmd
 }
 func healthCmd(o *options) *cobra.Command {
 	cmd := &cobra.Command{Use: "health"}
@@ -196,7 +836,7 @@ func healthCmd(o *options) *cobra.Command {
 		if e != nil {
 			return e
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), o.timeout)
+		ctx, cancel := commandContext(o)
 		defer cancel()
 		r := health.Ping(ctx, c)
 		printValue(r, o.jsonOut)
@@ -210,7 +850,7 @@ func healthCmd(o *options) *cobra.Command {
 		if e != nil {
 			return e
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), o.timeout)
+		ctx, cancel := commandContext(o)
 		defer cancel()
 		r := health.Check(ctx, c)
 		printValue(r, o.jsonOut)
@@ -222,7 +862,6 @@ func healthCmd(o *options) *cobra.Command {
 	return cmd
 }
 func apiCmd(o *options) *cobra.Command {
-	var body string
 	cmd := &cobra.Command{Use: "api METHOD PATH", Args: cobra.ExactArgs(2), RunE: func(_ *cobra.Command, a []string) error {
 		method := a[0]
 		if method != "GET" && method != "HEAD" {
@@ -233,15 +872,13 @@ func apiCmd(o *options) *cobra.Command {
 			return e
 		}
 		var out any
-		_ = body
-		e = c.API.Do(context.Background(), method, a[1], url.Values{}, nil, &out)
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		e = c.API.Do(ctx, method, a[1], url.Values{}, nil, &out)
 		if e == nil {
 			printValue(out, true)
 		}
 		return e
 	}}
-	cmd.Flags().StringVar(&body, "body-json", "", "JSON body (reserved for future guarded mutations)")
 	return cmd
 }
-
-var _ = strconv.Itoa
