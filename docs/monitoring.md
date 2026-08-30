@@ -2,8 +2,8 @@
 
 ## Current state
 
-`plexctl` currently ships a Go CLI and reusable client. It does **not** yet
-ship an MCP server or an HTTP endpoint. Uptime Kuma currently monitors the
+`plexctl` ships a Go CLI, reusable client, and an optional HTTP monitoring
+adapter. It does **not** ship an MCP server. Uptime Kuma currently monitors the
 legacy `plex-monitor:3002` Flask service, whose URLs look like:
 
 ```text
@@ -12,11 +12,31 @@ http://plex-monitor:3002/plex/<account>/<server>
 
 No live Kuma monitor is changed by this document.
 
-## Recommended replacement
+The adapter is started by the CLI:
 
-Add a thin HTTP adapter to `plexctl` that imports `internal/health` and the
-same configuration/authentication layers used by the CLI. The adapter should
-be a monitor-facing compatibility surface, not a second Plex client.
+```bash
+plexctl serve --listen 0.0.0.0:3002 --timeout 10s
+```
+
+For a container deployment, mount the `plexctl` configuration and provide the
+OS-keychain integration or deployment-specific credential setup required by
+the selected account. Prefer binding to the private Docker/network interface;
+`127.0.0.1` is the secure default.
+
+Configure each Kuma HTTP monitor to use the corresponding adapter URL, for
+example:
+
+```text
+http://plexctl:3002/plex/keithah/SF2
+```
+
+Set the expected status to `200` and use a reasonable monitor timeout longer
+than the adapter's upstream deadline. Kuma will treat the adapter's `503` as a
+failure while retaining the JSON body in its monitor history.
+
+The implementation imports `internal/health` and the same
+configuration/authentication layers used by the CLI. The adapter is a
+monitor-facing compatibility surface, not a second Plex client.
 
 For each configured account/server target, expose the existing URL shape:
 
