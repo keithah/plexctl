@@ -27,6 +27,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET required")
 		return
 	}
+	// Trim allows a single trailing slash, matching Uptime Kuma's URL normalization.
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	if len(parts) != 3 || parts[0] != "plex" || parts[1] == "" || parts[2] == "" {
 		writeError(w, http.StatusNotFound, "not_found", "monitor target not found")

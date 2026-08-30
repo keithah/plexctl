@@ -62,12 +62,13 @@ not expose Plex tokens, credential values, authenticated URLs, or full upstream
 responses. A reverse proxy can publish it to Kuma if Kuma cannot reach the
 private bind address directly.
 
-Example healthy response shape (illustrative; the exact schema should be
-versioned in the adapter tests):
+Example healthy response shape (illustrative; the exact schema is versioned
+in the adapter tests):
 
 ```json
 {
   "ok": true,
+  "account": "keithah",
   "server": "SF2",
   "stage": "library",
   "classification": "ok",
