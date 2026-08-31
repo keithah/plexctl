@@ -2,6 +2,8 @@ package pms
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 
@@ -85,6 +87,26 @@ func (c *Client) Metadata(ctx context.Context, key string) (MetadataContainer, e
 	var v MetadataContainer
 	e := c.API.Do(ctx, "GET", "/library/metadata/"+url.PathEscape(key), nil, nil, &v)
 	return v, e
+}
+
+func (c *Client) ProbeMedia(ctx context.Context, itemKey string) error {
+	metadata, err := c.Metadata(ctx, itemKey)
+	if err != nil {
+		return err
+	}
+	if len(metadata.MediaContainer.Metadata) == 0 {
+		return fmt.Errorf("media metadata is empty")
+	}
+	for _, media := range metadata.MediaContainer.Metadata[0].Media {
+		if len(media.Part) == 0 || media.Part[0].Key == "" {
+			continue
+		}
+		body, err := c.API.DoRawHeaders(ctx, "GET", media.Part[0].Key, nil, nil, http.Header{"Range": []string{"bytes=0-1048575"}})
+		if err == nil && len(body) > 0 {
+			return nil
+		}
+	}
+	return fmt.Errorf("no playable media part returned bytes")
 }
 
 // Children is served by some PMS versions but is absent from the pinned OpenAPI contract.
