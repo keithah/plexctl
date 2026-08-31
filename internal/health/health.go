@@ -88,10 +88,9 @@ func Check(ctx context.Context, c *pms.Client) Result {
 			if probed >= 2 {
 				break
 			}
-			if err := c.ProbeMedia(ctx, item.Key); err != nil {
-				return Result{OK: false, Classification: LibraryFailure, Stage: "media", Detail: err.Error(), Duration: time.Since(start)}
+			if err := c.ProbeMedia(ctx, item.Key); err == nil {
+				probed++
 			}
-			probed++
 		}
 		if probed > 0 {
 			return Result{OK: true, Classification: OK, Stage: "media", Detail: "identity, library, and media access verified", Duration: time.Since(start)}
