@@ -128,7 +128,7 @@ func (c *Client) hasMediaBytes(ctx context.Context, metadata MetadataContainer) 
 		if len(media.Part) == 0 || media.Part[0].Key == "" {
 			continue
 		}
-		body, err := c.API.DoRawHeaders(ctx, "GET", media.Part[0].Key, nil, nil, http.Header{"Range": []string{"bytes=0-1048575"}})
+		body, err := c.API.DoRawHeaders(ctx, "GET", media.Part[0].Key, url.Values{"download": []string{"1"}}, nil, http.Header{"Range": []string{"bytes=0-1024"}})
 		if err == nil && len(body) > 0 {
 			return true
 		}
