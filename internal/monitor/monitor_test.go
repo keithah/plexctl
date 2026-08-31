@@ -17,7 +17,14 @@ func TestHandlerHealthyAndUnhealthy(t *testing.T) {
 		case "/identity":
 			w.Write([]byte(`{"MediaContainer":{"size":0}}`))
 		case "/library/sections/all":
-			w.Write([]byte(`{"MediaContainer":{"size":1}}`))
+			w.Write([]byte(`{"MediaContainer":{"size":1,"Directory":[{"key":"1","type":"movie"}]}}`))
+		case "/library/sections/1/all":
+			w.Write([]byte(`{"MediaContainer":{"Metadata":[{"key":"11"},{"key":"12"}]}}`))
+		case "/library/metadata/11", "/library/metadata/12":
+			w.Write([]byte(`{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"key":"/library/parts/1/file.mkv"}]}]}]}}`))
+		case "/library/parts/1/file.mkv":
+			w.WriteHeader(http.StatusPartialContent)
+			w.Write(make([]byte, 1024))
 		default:
 			http.NotFound(w, r)
 		}

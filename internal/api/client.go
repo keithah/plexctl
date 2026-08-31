@@ -83,6 +83,16 @@ func (c *Client) Do(ctx context.Context, method, path string, query url.Values, 
 // for endpoints that do not return JSON (for example universal/subtitles,
 // which returns WebVTT).
 func (c *Client) DoRaw(ctx context.Context, method, path string, query url.Values, body io.Reader) ([]byte, error) {
+	return c.doRaw(ctx, method, path, query, body, nil)
+}
+
+// DoRawHeaders is DoRaw with additional request headers, for bounded media
+// probes that need a Range request while retaining the normal Plex headers.
+func (c *Client) DoRawHeaders(ctx context.Context, method, path string, query url.Values, body io.Reader, headers http.Header) ([]byte, error) {
+	return c.doRaw(ctx, method, path, query, body, headers)
+}
+
+func (c *Client) doRaw(ctx context.Context, method, path string, query url.Values, body io.Reader, headers http.Header) ([]byte, error) {
 	if path == "" || !strings.HasPrefix(path, "/") {
 		return nil, fmt.Errorf("api path must start with /")
 	}
@@ -110,6 +120,11 @@ func (c *Client) DoRaw(ctx context.Context, method, path string, query url.Value
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	for key, values := range headers {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
 	}
 	resp, e := c.HTTP.Do(req)
 	if e != nil {

@@ -63,7 +63,8 @@ func Check(ctx context.Context, c *pms.Client) Result {
 	if r := Ping(ctx, c); !r.OK {
 		return r
 	}
-	if _, e := c.Sections(ctx); e != nil {
+	sections, e := c.Sections(ctx)
+	if e != nil {
 		r := Result{OK: false, Classification: LibraryFailure, Stage: "library", Detail: e.Error(), Duration: time.Since(start)}
 		if isAuthFailure(e) {
 			r.Classification = AuthFailure
@@ -74,5 +75,27 @@ func Check(ctx context.Context, c *pms.Client) Result {
 		}
 		return r
 	}
-	return Result{OK: true, Classification: OK, Stage: "library", Detail: "identity and library access verified", Duration: time.Since(start)}
+	if len(sections.MediaContainer.Directory) == 0 {
+		return Result{OK: false, Classification: LibraryFailure, Stage: "library", Detail: "no libraries found", Duration: time.Since(start)}
+	}
+	for _, library := range sections.MediaContainer.Directory {
+		items, itemErr := c.Items(ctx, library.Key, nil)
+		if itemErr != nil {
+			continue
+		}
+		probed := 0
+		for _, item := range items.MediaContainer.Metadata {
+			if probed >= 2 {
+				break
+			}
+			if err := c.ProbeMedia(ctx, item.Key); err != nil {
+				return Result{OK: false, Classification: LibraryFailure, Stage: "media", Detail: err.Error(), Duration: time.Since(start)}
+			}
+			probed++
+		}
+		if probed > 0 {
+			return Result{OK: true, Classification: OK, Stage: "media", Detail: "identity, library, and media access verified", Duration: time.Since(start)}
+		}
+	}
+	return Result{OK: false, Classification: LibraryFailure, Stage: "media", Detail: "no media items found", Duration: time.Since(start)}
 }

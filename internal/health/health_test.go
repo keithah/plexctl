@@ -56,6 +56,62 @@ func TestAuthFailureIsClassified(t *testing.T) {
 	}
 }
 
+func TestCheckRequiresTwoMediaByteProbes(t *testing.T) {
+	requests := 0
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/identity":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"machineIdentifier":"m1"}}`))
+		case r.URL.Path == "/library/sections/all":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"Directory":[{"key":"1","type":"movie"}]}}`))
+		case r.URL.Path == "/library/sections/1/all":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"Metadata":[{"key":"11"},{"key":"12"}]}}`))
+		case r.URL.Path == "/library/metadata/11" || r.URL.Path == "/library/metadata/12":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"key":"/library/parts/1/file.mkv"}]}]}]}}`))
+		case r.URL.Path == "/library/parts/1/file.mkv":
+			requests++
+			if r.Header.Get("Range") != "bytes=0-1048575" {
+				t.Errorf("range=%q", r.Header.Get("Range"))
+			}
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(make([]byte, 1024))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer s.Close()
+	got := Check(context.Background(), healthClient(t, s.URL))
+	if !got.OK || got.Stage != "media" || requests != 2 {
+		t.Fatalf("result=%+v requests=%d", got, requests)
+	}
+}
+
+func TestCheckFailsWhenMediaBytesFail(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/identity":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"machineIdentifier":"m1"}}`))
+		case "/library/sections/all":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"Directory":[{"key":"1","type":"movie"}]}}`))
+		case "/library/sections/1/all":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"Metadata":[{"key":"11"}]}}`))
+		case "/library/metadata/11":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"key":"/library/parts/1/file.mkv"}]}]}]}}`))
+		case "/library/parts/1/file.mkv":
+			http.Error(w, "bad media", http.StatusServiceUnavailable)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer s.Close()
+	got := Check(context.Background(), healthClient(t, s.URL))
+	if got.OK || got.Stage != "media" {
+		t.Fatalf("result=%+v", got)
+	}
+}
+
 func TestCheckReportsLibraryAndSuccess(t *testing.T) {
 	identityOnly := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/identity" {
@@ -77,7 +133,7 @@ func TestCheckReportsLibraryAndSuccess(t *testing.T) {
 		}
 	}))
 	defer healthy.Close()
-	if got := Check(context.Background(), healthClient(t, healthy.URL)); !got.OK || got.Classification != OK {
-		t.Fatalf("result=%+v, want a healthy result", got)
+	if got := Check(context.Background(), healthClient(t, healthy.URL)); got.OK || got.Classification != LibraryFailure {
+		t.Fatalf("result=%+v, want a library failure without media", got)
 	}
 }
