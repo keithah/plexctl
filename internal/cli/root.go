@@ -883,46 +883,79 @@ func resolveServeTarget(o *options, account, server string) (*pms.Client, error)
 	if err != nil {
 		return nil, err
 	}
-	// Direct key match (machine identifier / profileKey).
+	// Profiles provide stable identity and account binding only. Their URL is
+	// deliberately ignored: Plex.tv may advertise a different connection later.
+	var profile config.ServerProfile
 	if p, ok := c.ServersV2[server]; ok {
 		if p.Account != account {
 			return nil, fmt.Errorf("server %q belongs to account %q", server, p.Account)
 		}
-		copy := *o
-		copy.server = server
-		return configured(&copy)
-	}
-	// Fall back to lookup by server Name, case-insensitive. This is required
-	// for the legacy monitor shape /plex/<account>/<servername> where the URL
-	// uses the Plex device Name (e.g. /plex/mseast/dc -> DC).
-	var candidates []string
-	for id, prof := range c.ServersV2 {
-		if prof.Account != account {
-			continue
-		}
-		if strings.EqualFold(prof.Name, server) {
-			candidates = append(candidates, id)
-		}
-	}
-	if len(candidates) == 0 {
-		// Also allow case-insensitive id match (legacy URLs lower-case the name).
+		profile = p
+	} else {
+		var candidates []string
 		for id, prof := range c.ServersV2 {
-			if prof.Account != account {
-				continue
-			}
-			if strings.EqualFold(id, server) {
+			if prof.Account == account && strings.EqualFold(prof.Name, server) {
 				candidates = append(candidates, id)
 			}
 		}
+		if len(candidates) == 0 {
+			for id, prof := range c.ServersV2 {
+				if prof.Account == account && strings.EqualFold(id, server) {
+					candidates = append(candidates, id)
+				}
+			}
+		}
+		if len(candidates) == 0 {
+			return nil, fmt.Errorf("server %q is not configured", server)
+		}
+		sort.Strings(candidates)
+		profile = c.ServersV2[candidates[0]]
 	}
-	if len(candidates) == 0 {
-		return nil, fmt.Errorf("server %q is not configured", server)
+	return resolveFreshServeTarget(o, c, account, server, profile)
+}
+
+// resolveFreshServeTarget makes Plex.tv the runtime source of truth for PMS
+// connections. Persisted profile URLs are never used as a fallback.
+func resolveFreshServeTarget(o *options, c config.Config, account, requested string, profile config.ServerProfile) (*pms.Client, error) {
+	a, ok := c.Accounts[account]
+	if !ok {
+		return nil, fmt.Errorf("account %q is not configured", account)
 	}
-	sort.Strings(candidates)
-	chosen := candidates[0]
-	copy := *o
-	copy.server = chosen
-	return configured(&copy)
+	accountToken, err := authstore.Get(a.TokenKey)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := commandContext(o)
+	defer cancel()
+	plex := plexauth.New("https://plex.tv", "plexctl", nil)
+	resources, err := plex.Resources(ctx, accountToken)
+	if err != nil {
+		return nil, fmt.Errorf("refresh Plex connections for %s: %w", account, err)
+	}
+	var matches []plexauth.Resource
+	for _, resource := range resources {
+		if profile.MachineIdentifier != "" && resource.ClientIdentifier == profile.MachineIdentifier {
+			matches = append(matches, resource)
+		} else if profile.MachineIdentifier == "" && strings.EqualFold(resource.Name, requested) {
+			matches = append(matches, resource)
+		}
+	}
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("server %q is not currently advertised by Plex.tv", requested)
+	}
+	if len(matches) > 1 {
+		return nil, fmt.Errorf("server %q has ambiguous Plex.tv identity", requested)
+	}
+	connection, err := validatedConnection(ctx, matches[0], accountToken)
+	if err != nil {
+		return nil, fmt.Errorf("refresh connection for %s/%s: %w", account, requested, err)
+	}
+	normalized := normalizeDiscoveredConnection(connection)
+	token := matches[0].AccessToken
+	if token == "" {
+		token = accountToken
+	}
+	return newPMSClient(config.Server{URL: normalized.URL, InsecureTLS: normalized.InsecureTLS}, token)
 }
 func apiCmd(o *options) *cobra.Command {
 	cmd := &cobra.Command{Use: "api METHOD PATH", Args: cobra.ExactArgs(2), RunE: func(_ *cobra.Command, a []string) error {
