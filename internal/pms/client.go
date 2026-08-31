@@ -117,7 +117,7 @@ func (c *Client) ProbeMedia(ctx context.Context, itemKey string) error {
 			}
 		}
 	}
-	return fmt.Errorf("no playable media part returned bytes")
+	return fmt.Errorf("no playable media part returned bytes for %s (metadata=%d)", itemKey, len(metadata.MediaContainer.Metadata))
 }
 
 func (c *Client) hasMediaBytes(ctx context.Context, metadata MetadataContainer) bool {

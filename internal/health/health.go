@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/keithah/plexctl/internal/api"
@@ -79,7 +81,10 @@ func Check(ctx context.Context, c *pms.Client) Result {
 		return Result{OK: false, Classification: LibraryFailure, Stage: "library", Detail: "no libraries found", Duration: time.Since(start)}
 	}
 	for _, library := range sections.MediaContainer.Directory {
-		items, itemErr := c.Items(ctx, library.Key, nil)
+		items, itemErr := c.Items(ctx, library.Key, url.Values{
+			"X-Plex-Container-Start": []string{"0"},
+			"X-Plex-Container-Size":  []string{strconv.Itoa(10)},
+		})
 		if itemErr != nil {
 			continue
 		}
