@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/keithah/plexctl/internal/api"
 )
@@ -83,9 +84,16 @@ func (c *Client) RecentlyAdded(ctx context.Context, key string, limit int) (Meta
 	}
 	return c.Items(ctx, key, q)
 }
+func metadataPath(key string) string {
+	if strings.HasPrefix(key, "/") {
+		return key
+	}
+	return "/library/metadata/" + url.PathEscape(key)
+}
+
 func (c *Client) Metadata(ctx context.Context, key string) (MetadataContainer, error) {
 	var v MetadataContainer
-	e := c.API.Do(ctx, "GET", "/library/metadata/"+url.PathEscape(key), nil, nil, &v)
+	e := c.API.Do(ctx, "GET", metadataPath(key), nil, nil, &v)
 	return v, e
 }
 
