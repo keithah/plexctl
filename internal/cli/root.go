@@ -266,6 +266,7 @@ func authCmd() *cobra.Command {
 	}}
 	login.Flags().StringVar(&accountName, "name", "", "local account name (defaults to Plex username)")
 	cmd.AddCommand(login)
+	cmd.AddCommand(importCmd())
 	cmd.AddCommand(&cobra.Command{Use: "logout ACCOUNT", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, a []string) error {
 		c, e := config.Load(config.Path())
 		if e != nil {
@@ -882,15 +883,45 @@ func resolveServeTarget(o *options, account, server string) (*pms.Client, error)
 	if err != nil {
 		return nil, err
 	}
-	p, ok := c.ServersV2[server]
-	if !ok {
+	// Direct key match (machine identifier / profileKey).
+	if p, ok := c.ServersV2[server]; ok {
+		if p.Account != account {
+			return nil, fmt.Errorf("server %q belongs to account %q", server, p.Account)
+		}
+		copy := *o
+		copy.server = server
+		return configured(&copy)
+	}
+	// Fall back to lookup by server Name, case-insensitive. This is required
+	// for the legacy monitor shape /plex/<account>/<servername> where the URL
+	// uses the Plex device Name (e.g. /plex/mseast/dc -> DC).
+	var candidates []string
+	for id, prof := range c.ServersV2 {
+		if prof.Account != account {
+			continue
+		}
+		if strings.EqualFold(prof.Name, server) {
+			candidates = append(candidates, id)
+		}
+	}
+	if len(candidates) == 0 {
+		// Also allow case-insensitive id match (legacy URLs lower-case the name).
+		for id, prof := range c.ServersV2 {
+			if prof.Account != account {
+				continue
+			}
+			if strings.EqualFold(id, server) {
+				candidates = append(candidates, id)
+			}
+		}
+	}
+	if len(candidates) == 0 {
 		return nil, fmt.Errorf("server %q is not configured", server)
 	}
-	if p.Account != account {
-		return nil, fmt.Errorf("server %q belongs to account %q", server, p.Account)
-	}
+	sort.Strings(candidates)
+	chosen := candidates[0]
 	copy := *o
-	copy.server = server
+	copy.server = chosen
 	return configured(&copy)
 }
 func apiCmd(o *options) *cobra.Command {
