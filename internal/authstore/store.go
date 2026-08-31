@@ -1,6 +1,7 @@
 package authstore
 
 import (
+	"errors"
 	"os"
 
 	"github.com/zalando/go-keyring"
@@ -11,23 +12,22 @@ const service = "github.com.keithah.plexctl"
 func Set(key, token string) error {
 	if err := keyring.Set(service, key, token); err == nil {
 		return nil
-	}
-	// Fall back to file/env store (used inside containers without a keyring daemon).
-	if setFileFallback(key, token) {
+	} else if fileErr := setFileFallback(key, token); fileErr == nil {
 		return nil
+	} else {
+		return errors.Join(err, fileErr)
 	}
-	// Last resort: return the original keyring error.
-	return keyring.Set(service, key, token)
 }
 
 func Get(key string) (string, error) {
 	if tok, err := keyring.Get(service, key); err == nil {
 		return tok, nil
 	}
-	if v, ok := getFileFallback(key); ok {
+	if v, ok, err := getFileFallback(key); err != nil {
+		return "", err
+	} else if ok {
 		return v, nil
 	}
-	// Allow legacy PLEX_TOKEN_<ACCOUNT> env for account keys (e.g. account/mswest1 -> PLEX_TOKEN_MSWEST1).
 	if len(key) > 8 && key[:8] == "account/" {
 		acc := key[8:]
 		if v := os.Getenv("PLEX_TOKEN_" + acc); v != "" {
@@ -53,18 +53,13 @@ func stringToUpper(s string) string {
 }
 
 func Delete(key string) error {
-	_ = deleteFileFallback(key)
-	if err := keyring.Delete(service, key); err != nil {
-		// If the secret was only in the file fallback, treat as success.
-		if _, ok := getFileFallback(key); !ok {
-			// getFileFallback already did locking; just check existence via file
-			// by trying to see if we deleted it above. If deleteFileFallback
-			// succeeded and keyring says not found, don't error.
-			if err == keyring.ErrNotFound {
-				return nil
-			}
+	fileErr := deleteFileFallback(key)
+	keyErr := keyring.Delete(service, key)
+	if keyErr != nil && !errors.Is(keyErr, keyring.ErrNotFound) {
+		if fileErr != nil {
+			return errors.Join(keyErr, fileErr)
 		}
-		return err
+		return keyErr
 	}
-	return nil
+	return fileErr
 }

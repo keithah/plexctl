@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -38,6 +39,29 @@ func TestParseLegacyFileRequiresDefaultTokens(t *testing.T) {
 	}
 	if _, err := parseLegacyFile(path); err == nil {
 		t.Fatal("expected missing DEFAULT_TOKENS error")
+	}
+}
+
+func TestImportDoesNotAcceptTokenFlag(t *testing.T) {
+	if importCmd().Flags().Lookup("token") != nil {
+		t.Fatal("import must not accept secret tokens as command-line arguments")
+	}
+}
+func TestImportFailureIsNonNil(t *testing.T) {
+	if err := importFailure(1, 1, 0); err == nil || !strings.Contains(err.Error(), "1 of 1") {
+		t.Fatalf("err=%v, want aggregate failure", err)
+	}
+	if err := importFailure(0, 1, 1); err != nil {
+		t.Fatalf("zero failures should return nil, got %v", err)
+	}
+}
+func TestReadImportToken(t *testing.T) {
+	got, err := readImportToken(strings.NewReader("  token-from-stdin\n"))
+	if err != nil || got != "token-from-stdin" {
+		t.Fatalf("got %q, err=%v", got, err)
+	}
+	if _, err := readImportToken(strings.NewReader("\n")); err == nil {
+		t.Fatal("expected empty stdin to fail")
 	}
 }
 

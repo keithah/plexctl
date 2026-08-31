@@ -2,7 +2,9 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"strings"
@@ -12,12 +14,12 @@ import (
 	"github.com/keithah/plexctl/internal/config"
 	"github.com/keithah/plexctl/internal/plexauth"
 	"github.com/spf13/cobra"
+	"github.com/zalando/go-keyring"
 )
 
 func importCmd() *cobra.Command {
 	var file string
 	var account string
-	var token string
 	var dryRun bool
 	cmd := &cobra.Command{
 		Use:   "import",
@@ -25,9 +27,8 @@ func importCmd() *cobra.Command {
 		Long: `Import legacy Plex account tokens into plexctl.
 
 Supports:
-  --file PATH   Parse DEFAULT_TOKENS from a legacy plex_multi_account.py
-  --account NAME --token TOKEN   Import a single account token
-  --dry-run     Parse and validate without writing
+  --account NAME   Import one account; read its token from stdin
+  --dry-run        Parse without writing
 
 Each token is validated against plex.tv, its owned servers are discovered,
 connections are probed in preference order, and the resulting profiles are
@@ -41,9 +42,10 @@ stored like 'auth login' does. Tokens are never printed.`,
 				if err != nil {
 					return err
 				}
-			case token != "":
-				if account == "" {
-					return fmt.Errorf("--account is required with --token")
+			case account != "":
+				token, readErr := readImportToken(cmd.InOrStdin())
+				if readErr != nil {
+					return fmt.Errorf("read token from stdin: %w", readErr)
 				}
 				tokens = map[string]string{account: token}
 			default:
@@ -55,8 +57,11 @@ stored like 'auth login' does. Tokens are never printed.`,
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 			defer cancel()
+			failed := 0
+			completed := 0
 			for name, tok := range tokens {
 				if strings.TrimSpace(tok) == "" {
+					failed++
 					fmt.Fprintf(os.Stderr, "Skipping %s: empty token\n", name)
 					continue
 				}
@@ -67,19 +72,42 @@ stored like 'auth login' does. Tokens are never printed.`,
 				}
 				count, err := importOne(ctx, name, tok)
 				if err != nil {
+					failed++
 					fmt.Fprintf(os.Stderr, "  warning: %s: %v\n", name, err)
 					continue
 				}
+				completed++
 				fmt.Fprintf(os.Stderr, "  %s: discovered %d server(s)\n", name, count)
+			}
+			if failed > 0 {
+				return importFailure(failed, len(tokens), completed)
 			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&file, "file", "", "path to legacy plex_multi_account.py")
-	cmd.Flags().StringVar(&account, "account", "", "single account name (with --token)")
-	cmd.Flags().StringVar(&token, "token", "", "single Plex token (with --account)")
+	cmd.Flags().StringVar(&account, "account", "", "single account name; token is read from stdin")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "validate without writing")
 	return cmd
+}
+
+func importFailure(failed, total, completed int) error {
+	if failed == 0 {
+		return nil
+	}
+	return fmt.Errorf("import failed for %d of %d account(s) (%d succeeded)", failed, total, completed)
+}
+
+func readImportToken(r io.Reader) (string, error) {
+	b, err := io.ReadAll(io.LimitReader(r, 16<<10))
+	if err != nil {
+		return "", err
+	}
+	token := strings.TrimSpace(string(b))
+	if token == "" {
+		return "", fmt.Errorf("stdin contained an empty token")
+	}
+	return token, nil
 }
 
 func tokensFromEnv() map[string]string {
@@ -148,11 +176,9 @@ func importOne(ctx context.Context, name, tok string) (int, error) {
 		return 0, err
 	}
 	key := "account/" + name
-	if err := authstore.Set(key, tok); err != nil {
-		return 0, fmt.Errorf("store Plex token: %w", err)
-	}
-	c.Accounts[name] = config.Account{Username: u.Username, Email: u.Email, PlexID: u.ID, TokenKey: key}
-	saved := 0
+	profiles := make(map[string]config.ServerProfile)
+	credentials := map[string]string{key: tok}
+	currentServer := c.CurrentServer
 	for i, r := range resources {
 		conn, err := validatedConnection(ctx, r, tok)
 		if err != nil {
@@ -166,22 +192,57 @@ func importOne(ctx context.Context, name, tok string) (int, error) {
 		tokenKey := key
 		if r.AccessToken != "" {
 			tokenKey = "server/" + name + "/" + id
-			if err := authstore.Set(tokenKey, r.AccessToken); err != nil {
-				return saved, fmt.Errorf("store Plex server token: %w", err)
-			}
+			credentials[tokenKey] = r.AccessToken
 		}
 		normalized := normalizeDiscoveredConnection(conn)
-		c.ServersV2[id] = config.ServerProfile{Account: name, Name: r.Name, MachineIdentifier: r.ClientIdentifier, TokenKey: tokenKey, URL: normalized.URL, InsecureTLS: normalized.InsecureTLS, Local: conn.Local, Relay: conn.Relay}
-		if c.CurrentServer == "" {
-			c.CurrentServer = id
+		profiles[id] = config.ServerProfile{Account: name, Name: r.Name, MachineIdentifier: r.ClientIdentifier, TokenKey: tokenKey, URL: normalized.URL, InsecureTLS: normalized.InsecureTLS, Local: conn.Local, Relay: conn.Relay}
+		if currentServer == "" {
+			currentServer = id
 		}
-		saved++
 	}
-	if c.CurrentAccount == "" {
-		c.CurrentAccount = name
+
+	// Validation is complete before any persistent state changes. Credential
+	// writes are journaled so a later write or config failure restores prior values.
+	type prior struct {
+		key, value string
+		existed    bool
 	}
+	journal := make([]prior, 0, len(credentials))
+	rollback := func() {
+		for i := len(journal) - 1; i >= 0; i-- {
+			p := journal[i]
+			if p.existed {
+				_ = authstore.Set(p.key, p.value)
+			} else {
+				_ = authstore.Delete(p.key)
+			}
+		}
+	}
+	for credentialKey, credential := range credentials {
+		old, oldErr := authstore.Get(credentialKey)
+		if oldErr == nil {
+			journal = append(journal, prior{credentialKey, old, true})
+		} else if !errors.Is(oldErr, keyring.ErrNotFound) {
+			// Missing keyring backends are expected during container imports;
+			// preserve the absence unless the file fallback reported a real error.
+			journal = append(journal, prior{key: credentialKey})
+		}
+		if err := authstore.Set(credentialKey, credential); err != nil {
+			rollback()
+			return 0, fmt.Errorf("store Plex credential: %w", err)
+		}
+	}
+	previous := c
+	c.Accounts[name] = config.Account{Username: u.Username, Email: u.Email, PlexID: u.ID, TokenKey: key}
+	for id, profile := range profiles {
+		c.ServersV2[id] = profile
+	}
+	c.CurrentAccount = name
+	c.CurrentServer = currentServer
 	if err := config.Save(config.Path(), c); err != nil {
-		return saved, err
+		rollback()
+		_ = config.Save(config.Path(), previous)
+		return 0, fmt.Errorf("save imported configuration: %w", err)
 	}
-	return saved, nil
+	return len(profiles), nil
 }
