@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/keithah/plexctl/internal/api"
 )
@@ -114,5 +116,57 @@ func TestSessionModels(t *testing.T) {
 	v, err := c.Sessions(context.Background())
 	if err != nil || v.MediaContainer.Size != 1 || v.MediaContainer.Metadata[0].Session.ID != "abc" {
 		t.Fatalf("value=%+v err=%v", v, err)
+	}
+}
+
+func TestProbeMediaSupportsMusicAndIgnoresRange(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/library/metadata/artist":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"Metadata":[{"type":"artist"}]}}`))
+		case "/library/metadata/album":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"Metadata":[{"type":"album"}]}}`))
+		case "/library/metadata/artist/children":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"Metadata":[{"key":"/library/metadata/album","type":"album"}]}}`))
+		case "/library/metadata/album/children":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"Metadata":[{"key":"/library/metadata/track","type":"track"}]}}`))
+		case "/library/metadata/track":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"Metadata":[{"type":"track","Media":[{"Part":[{"key":"/library/parts/song"}]}]}]}}`))
+		case "/library/parts/song":
+			_, _ = w.Write(make([]byte, 3<<20))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer s.Close()
+	a, err := api.New(s.URL, "token", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := New(a).ProbeMedia(context.Background(), "/library/metadata/artist"); err != nil {
+		t.Fatalf("music probe: %v", err)
+	}
+}
+
+func TestProbeMediaCycleIsBounded(t *testing.T) {
+	var calls int64
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&calls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"MediaContainer":{"Metadata":[{"key":"/library/metadata/cycle","type":"season"}]}}`))
+	}))
+	defer s.Close()
+	a, err := api.New(s.URL, "token", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := New(a).ProbeMedia(ctx, "/library/metadata/cycle"); err == nil {
+		t.Fatal("cycle should not report playable media")
+	}
+	if got := atomic.LoadInt64(&calls); got > 20 {
+		t.Fatalf("cycle issued %d requests, want bounded traversal", got)
 	}
 }

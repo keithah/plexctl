@@ -132,23 +132,23 @@ func setFileFallback(key, token string) error {
 	return nil
 }
 
-func deleteFileFallback(key string) error {
+func deleteFileFallback(key string) (bool, error) {
 	path := tokenFilePath()
 	if path == "" {
-		return nil
+		return false, nil
 	}
 	fileMu.Lock()
 	defer fileMu.Unlock()
 	m, err := loadTokenFile(path)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if _, ok := m[key]; !ok {
-		return nil
+		return false, nil
 	}
 	delete(m, key)
 	if err := saveTokenFile(path, m); err != nil {
-		return fmt.Errorf("write token file %s: %w", path, err)
+		return true, fmt.Errorf("write token file %s: %w", path, err)
 	}
-	return nil
+	return true, nil
 }

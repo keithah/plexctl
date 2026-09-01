@@ -98,6 +98,19 @@ func (c *Client) Metadata(ctx context.Context, key string) (MetadataContainer, e
 }
 
 func (c *Client) ProbeMedia(ctx context.Context, itemKey string) error {
+	return c.probeMedia(ctx, itemKey, 0, map[string]struct{}{})
+}
+
+const maxProbeDepth = 8
+
+func (c *Client) probeMedia(ctx context.Context, itemKey string, depth int, visited map[string]struct{}) error {
+	if depth > maxProbeDepth {
+		return fmt.Errorf("media metadata nesting exceeds depth limit %d", maxProbeDepth)
+	}
+	if _, ok := visited[itemKey]; ok {
+		return fmt.Errorf("cyclic media metadata at %s", itemKey)
+	}
+	visited[itemKey] = struct{}{}
 	metadata, err := c.Metadata(ctx, itemKey)
 	if err != nil {
 		return err
@@ -107,12 +120,15 @@ func (c *Client) ProbeMedia(ctx context.Context, itemKey string) error {
 	}
 	if len(metadata.MediaContainer.Metadata) > 0 {
 		switch metadata.MediaContainer.Metadata[0].Type {
-		case "show", "season":
+		case "show", "season", "artist", "album":
 			children, childErr := c.Children(ctx, itemKey)
 			if childErr == nil {
 				for _, child := range children.MediaContainer.Metadata {
-					if child.Type == "season" || child.Type == "episode" {
-						if c.ProbeMedia(ctx, child.Key) == nil {
+					if child.Key == "" {
+						continue
+					}
+					if child.Type == "show" || child.Type == "season" || child.Type == "episode" || child.Type == "artist" || child.Type == "album" || child.Type == "track" {
+						if c.probeMedia(ctx, child.Key, depth+1, visited) == nil {
 							return nil
 						}
 					}
@@ -131,7 +147,7 @@ func (c *Client) hasMediaBytes(ctx context.Context, metadata MetadataContainer) 
 		if len(media.Part) == 0 || media.Part[0].Key == "" {
 			continue
 		}
-		body, err := c.API.DoRawHeaders(ctx, "GET", media.Part[0].Key, url.Values{"download": []string{"1"}}, nil, http.Header{"Range": []string{"bytes=0-1024"}})
+		body, err := c.API.DoRawHeadersLimited(ctx, "GET", media.Part[0].Key, url.Values{"download": []string{"1"}}, nil, http.Header{"Range": []string{"bytes=0-1024"}}, 1024)
 		if err == nil && len(body) > 0 {
 			return true
 		}

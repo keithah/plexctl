@@ -2,6 +2,7 @@ package authstore
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 
@@ -12,7 +13,9 @@ const service = "github.com.keithah.plexctl"
 
 func Set(key, token string) error {
 	if err := keyring.Set(service, key, token); err == nil {
-		_ = deleteFileFallback(key)
+		if _, fileErr := deleteFileFallback(key); fileErr != nil {
+			return fmt.Errorf("keyring set succeeded but stale file fallback remains: %w", fileErr)
+		}
 		return nil
 	} else if fileErr := setFileFallback(key, token); fileErr == nil {
 		return nil
@@ -40,13 +43,13 @@ func Get(key string) (string, error) {
 			return v, nil
 		}
 	}
-	return "", keyErr
+	return "", keyring.ErrNotFound
 }
 
 func Delete(key string) error {
-	fileErr := deleteFileFallback(key)
+	filePresent, fileErr := deleteFileFallback(key)
 	keyErr := keyring.Delete(service, key)
-	if keyErr != nil && !errors.Is(keyErr, keyring.ErrNotFound) {
+	if keyErr != nil && !errors.Is(keyErr, keyring.ErrNotFound) && !filePresent {
 		if fileErr != nil {
 			return errors.Join(keyErr, fileErr)
 		}
