@@ -10,7 +10,11 @@ healthy even if its context is cancelled immediately after the response is
 received. Error details are bounded and redact Plex tokens before truncation.
 
 The health package is deliberately independent of Uptime Kuma and Yarr. The
-repository does not currently ship an MCP server or HTTP adapter. The planned
-Kuma integration is a thin local HTTP wrapper around this package, preserving
-the existing monitor URL shape while avoiding terminal-output parsing or a
-second Plex implementation. See [Monitoring integration](monitoring.md).
+repository does not currently ship an MCP server or HTTP adapter. The current
+monitor adapter (running at `plexctl-monitor:3003`) replaces the retired
+`plex-monitor:3002` service; Kuma monitors point at the adapter URL, not
+at a Plex URL directly. See [Monitoring integration](monitoring.md) for the
+adapter contract and the Kuma URL mapping (`/plex/<account>/<server>` → 200/503
+with redacted JSON detail, bounded library plus media-byte verification, and
+cycle/depth-capped media probes). Cache (30s TTL, keyring-file-keyed, fail-closed)
+is wired into `serve` but does not replace fresh discovery.

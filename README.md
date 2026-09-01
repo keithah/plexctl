@@ -58,9 +58,9 @@ normal certificate verification.
 - `transcode subtitles TYPE SESSION_ID [--param key=value]` — query universal subtitle handling.
 - `sessions list` — list active sessions.
 - `sessions history [--account-id ID] [--section-id ID] [--sort EXPR] [--viewed-at TIME] [--metadata-id ID]` — playback history.
-- `health ping` — bounded identity liveness check.
-- `health check` — identity plus library-access check.
-- `serve --listen ADDR` — local HTTP adapter for Uptime Kuma (`GET /plex/<account>/<server>` → 200/503 JSON with classification).
+`health ping` — bounded identity liveness check.
+`health check` — identity plus library-access check with bounded media-byte verification (Range bytes=0-1024, download=1).
+`serve --listen ADDR` — local HTTP adapter for Uptime Kuma (`GET /plex/<account>/<server>` → 200/503 JSON with classification; binds to `3003` by convention).
 - `api GET /path` — read-only access to any PMS endpoint.
 
 Read commands accept `--json`, `--server`, and `--timeout`, and every request

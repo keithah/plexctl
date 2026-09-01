@@ -1,13 +1,10 @@
 # Monitoring integration
-
 ## Current state
-
 `plexctl` ships a Go CLI, reusable client, and an optional HTTP monitoring
 adapter. It does **not** ship an MCP server. Uptime Kuma currently monitors the
-legacy `plex-monitor:3002` Flask service, whose URLs look like:
-
+**new** `plexctl-monitor:3003` service, whose URLs look like:
 ```text
-http://plex-monitor:3002/plex/<account>/<server>
+http://plexctl:3003/plex/<account>/<server>
 ```
 
 No live Kuma monitor is changed by this document.
@@ -15,7 +12,7 @@ No live Kuma monitor is changed by this document.
 The adapter is started by the CLI:
 
 ```bash
-plexctl serve --listen 0.0.0.0:3002 --timeout 10s
+plexctl serve --listen 0.0.0.0:3003 --timeout 10s
 ```
 
 For a container deployment, mount the `plexctl` configuration and provide the
@@ -27,7 +24,7 @@ Configure each Kuma HTTP monitor to use the corresponding adapter URL, for
 example:
 
 ```text
-http://plexctl:3002/plex/keithah/SF2
+http://plexctl:3003/plex/keithah/SF2
 ```
 
 Set the expected status to `200` and use a reasonable monitor timeout longer
