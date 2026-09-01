@@ -909,6 +909,9 @@ func resolveServeTarget(o *options, account, server string) (*pms.Client, error)
 			return nil, fmt.Errorf("server %q is not configured", server)
 		}
 		sort.Strings(candidates)
+		if len(candidates) > 1 {
+			return nil, fmt.Errorf("server %q matches multiple profiles: %s", server, strings.Join(candidates, ", "))
+		}
 		profile = c.ServersV2[candidates[0]]
 	}
 	return resolveFreshServeTarget(o, c, account, server, profile)

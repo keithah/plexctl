@@ -69,6 +69,9 @@ func saveTokenFile(path string, m map[string]string) error {
 	if err := f.Chmod(0600); err != nil {
 		return cleanup(err)
 	}
+	if err := f.Sync(); err != nil {
+		return cleanup(err)
+	}
 	if err := f.Close(); err != nil {
 		_ = os.Remove(tmp)
 		return err

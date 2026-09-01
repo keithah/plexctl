@@ -105,13 +105,16 @@ func (c *Client) ProbeMedia(ctx context.Context, itemKey string) error {
 	if c.hasMediaBytes(ctx, metadata) {
 		return nil
 	}
-	if len(metadata.MediaContainer.Metadata) > 0 && metadata.MediaContainer.Metadata[0].Type == "show" {
-		children, childErr := c.Children(ctx, itemKey)
-		if childErr == nil {
-			for _, child := range children.MediaContainer.Metadata {
-				if child.Type == "season" || child.Type == "episode" {
-					if c.ProbeMedia(ctx, child.Key) == nil {
-						return nil
+	if len(metadata.MediaContainer.Metadata) > 0 {
+		switch metadata.MediaContainer.Metadata[0].Type {
+		case "show", "season":
+			children, childErr := c.Children(ctx, itemKey)
+			if childErr == nil {
+				for _, child := range children.MediaContainer.Metadata {
+					if child.Type == "season" || child.Type == "episode" {
+						if c.ProbeMedia(ctx, child.Key) == nil {
+							return nil
+						}
 					}
 				}
 			}

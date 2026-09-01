@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"regexp"
 	"strings"
@@ -52,7 +53,7 @@ stored like 'auth login' does. Tokens are never printed.`,
 				// Try env PLEX_TOKEN_* (legacy) and PLEXCTL_TOKENS_FILE companion
 				tokens = tokensFromEnv()
 				if len(tokens) == 0 {
-					return fmt.Errorf("no tokens found: provide --file or --account/--token or set PLEX_TOKEN_*")
+					return fmt.Errorf("no tokens found: provide --file or --account, or set PLEX_TOKEN_*")
 				}
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
@@ -144,11 +145,11 @@ func parseLegacyFile(path string) (map[string]string, error) {
 		return nil, fmt.Errorf("no DEFAULT_TOKENS found in %s", path)
 	}
 	open := strings.Index(s[start:], "{")
-	close := strings.Index(s[start:], "}")
-	if open == -1 || close == -1 || close <= open {
+	end := strings.Index(s[start:], "}")
+	if open == -1 || end == -1 || end <= open {
 		return nil, fmt.Errorf("malformed DEFAULT_TOKENS block in %s", path)
 	}
-	block := s[start+open : start+close+1]
+	block := s[start+open : start+end+1]
 	matches := legacyTokenRe.FindAllStringSubmatch(block, -1)
 	if len(matches) == 0 {
 		return nil, fmt.Errorf("no tokens found in %s (expected DEFAULT_TOKENS dict)", path)
@@ -222,10 +223,11 @@ func importOne(ctx context.Context, name, tok string) (int, error) {
 		old, oldErr := authstore.Get(credentialKey)
 		if oldErr == nil {
 			journal = append(journal, prior{credentialKey, old, true})
-		} else if !errors.Is(oldErr, keyring.ErrNotFound) {
-			// Missing keyring backends are expected during container imports;
-			// preserve the absence unless the file fallback reported a real error.
+		} else if errors.Is(oldErr, keyring.ErrNotFound) {
 			journal = append(journal, prior{key: credentialKey})
+		} else {
+			rollback()
+			return 0, fmt.Errorf("read prior credential %s: %w", credentialKey, oldErr)
 		}
 		if err := authstore.Set(credentialKey, credential); err != nil {
 			rollback()
@@ -233,6 +235,8 @@ func importOne(ctx context.Context, name, tok string) (int, error) {
 		}
 	}
 	previous := c
+	previous.Accounts = maps.Clone(c.Accounts)
+	previous.ServersV2 = maps.Clone(c.ServersV2)
 	c.Accounts[name] = config.Account{Username: u.Username, Email: u.Email, PlexID: u.ID, TokenKey: key}
 	for id, profile := range profiles {
 		c.ServersV2[id] = profile

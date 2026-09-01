@@ -89,10 +89,12 @@ func Check(ctx context.Context, c *pms.Client) Result {
 			continue
 		}
 		probed := 0
+		attempted := 0
 		for _, item := range items.MediaContainer.Metadata {
-			if probed >= 2 {
+			if attempted >= 2 {
 				break
 			}
+			attempted++
 			if err := c.ProbeMedia(ctx, item.Key); err == nil {
 				probed++
 			}
