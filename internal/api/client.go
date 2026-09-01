@@ -83,6 +83,24 @@ func (c *Client) Do(ctx context.Context, method, path string, query url.Values, 
 // for endpoints that do not return JSON (for example universal/subtitles,
 // which returns WebVTT).
 func (c *Client) DoRaw(ctx context.Context, method, path string, query url.Values, body io.Reader) ([]byte, error) {
+	return c.doRaw(ctx, method, path, query, body, nil)
+}
+
+// DoRawHeaders is DoRaw with additional request headers, for bounded media
+// probes that need a Range request while retaining the normal Plex headers.
+func (c *Client) DoRawHeaders(ctx context.Context, method, path string, query url.Values, body io.Reader, headers http.Header) ([]byte, error) {
+	return c.doRaw(ctx, method, path, query, body, headers)
+}
+
+func (c *Client) DoRawHeadersLimited(ctx context.Context, method, path string, query url.Values, body io.Reader, headers http.Header, limit int64) ([]byte, error) {
+	return c.doRawLimit(ctx, method, path, query, body, headers, limit)
+}
+
+func (c *Client) doRaw(ctx context.Context, method, path string, query url.Values, body io.Reader, headers http.Header) ([]byte, error) {
+	return c.doRawLimit(ctx, method, path, query, body, headers, maxResponseBytes)
+}
+
+func (c *Client) doRawLimit(ctx context.Context, method, path string, query url.Values, body io.Reader, headers http.Header, limit int64) ([]byte, error) {
 	if path == "" || !strings.HasPrefix(path, "/") {
 		return nil, fmt.Errorf("api path must start with /")
 	}
@@ -111,6 +129,11 @@ func (c *Client) DoRaw(ctx context.Context, method, path string, query url.Value
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	for key, values := range headers {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
 	resp, e := c.HTTP.Do(req)
 	if e != nil {
 		return nil, e
@@ -119,15 +142,21 @@ func (c *Client) DoRaw(ctx context.Context, method, path string, query url.Value
 	// Read one byte past the cap so a body that exactly fills the limit can be
 	// distinguished from one that was truncated. Silently truncating would
 	// surface as a confusing "unexpected end of JSON input" decode error.
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	if limit <= 0 {
+		return nil, fmt.Errorf("response limit must be positive")
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return nil, fmt.Errorf("read %s %s response: %w", method, path, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, &HTTPError{resp.StatusCode, method, path, safeDetail(data, c.Token)}
 	}
-	if int64(len(data)) > maxResponseBytes {
-		return nil, fmt.Errorf("%s %s response exceeds %d byte limit; narrow the request with a limit or filter", method, path, maxResponseBytes)
+	if int64(len(data)) > limit {
+		if limit < maxResponseBytes {
+			return data[:limit], nil
+		}
+		return nil, fmt.Errorf("%s %s response exceeds %d byte limit; narrow the request with a limit or filter", method, path, limit)
 	}
 	return data, nil
 }

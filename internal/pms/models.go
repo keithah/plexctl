@@ -84,15 +84,22 @@ type MetadataContainer struct {
 	} `json:"MediaContainer"`
 }
 type Metadata struct {
-	RatingKey        string `json:"ratingKey"`
-	Key              string `json:"key"`
-	Type             string `json:"type"`
-	Title            string `json:"title"`
-	GrandparentTitle string `json:"grandparentTitle"`
-	ParentTitle      string `json:"parentTitle"`
-	Year             int    `json:"year"`
-	Duration         int64  `json:"duration"`
-	ViewOffset       int64  `json:"viewOffset"`
+	RatingKey        string  `json:"ratingKey"`
+	Key              string  `json:"key"`
+	Type             string  `json:"type"`
+	Title            string  `json:"title"`
+	GrandparentTitle string  `json:"grandparentTitle"`
+	ParentTitle      string  `json:"parentTitle"`
+	Year             int     `json:"year"`
+	Duration         int64   `json:"duration"`
+	ViewOffset       int64   `json:"viewOffset"`
+	Media            []Media `json:"Media"`
+}
+type Media struct {
+	Part []Part `json:"Part"`
+}
+type Part struct {
+	Key string `json:"key"`
 }
 type SessionContainer struct {
 	MediaContainer struct {

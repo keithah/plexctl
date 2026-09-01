@@ -2,8 +2,11 @@ package pms
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/keithah/plexctl/internal/api"
 )
@@ -81,16 +84,81 @@ func (c *Client) RecentlyAdded(ctx context.Context, key string, limit int) (Meta
 	}
 	return c.Items(ctx, key, q)
 }
+func metadataPath(key string) string {
+	if strings.HasPrefix(key, "/") {
+		return key
+	}
+	return "/library/metadata/" + url.PathEscape(key)
+}
+
 func (c *Client) Metadata(ctx context.Context, key string) (MetadataContainer, error) {
 	var v MetadataContainer
-	e := c.API.Do(ctx, "GET", "/library/metadata/"+url.PathEscape(key), nil, nil, &v)
+	e := c.API.Do(ctx, "GET", metadataPath(key), nil, nil, &v)
 	return v, e
+}
+
+func (c *Client) ProbeMedia(ctx context.Context, itemKey string) error {
+	return c.probeMedia(ctx, itemKey, 0, map[string]struct{}{})
+}
+
+const maxProbeDepth = 8
+
+func (c *Client) probeMedia(ctx context.Context, itemKey string, depth int, visited map[string]struct{}) error {
+	if depth > maxProbeDepth {
+		return fmt.Errorf("media metadata nesting exceeds depth limit %d", maxProbeDepth)
+	}
+	if _, ok := visited[itemKey]; ok {
+		return fmt.Errorf("cyclic media metadata at %s", itemKey)
+	}
+	visited[itemKey] = struct{}{}
+	metadata, err := c.Metadata(ctx, itemKey)
+	if err != nil {
+		return err
+	}
+	if c.hasMediaBytes(ctx, metadata) {
+		return nil
+	}
+	if len(metadata.MediaContainer.Metadata) > 0 {
+		switch metadata.MediaContainer.Metadata[0].Type {
+		case "show", "season", "artist", "album":
+			children, childErr := c.Children(ctx, itemKey)
+			if childErr == nil {
+				for _, child := range children.MediaContainer.Metadata {
+					if child.Key == "" {
+						continue
+					}
+					if child.Type == "show" || child.Type == "season" || child.Type == "episode" || child.Type == "artist" || child.Type == "album" || child.Type == "track" {
+						if c.probeMedia(ctx, child.Key, depth+1, visited) == nil {
+							return nil
+						}
+					}
+				}
+			}
+		}
+	}
+	return fmt.Errorf("no playable media part returned bytes for %s (metadata=%d)", itemKey, len(metadata.MediaContainer.Metadata))
+}
+
+func (c *Client) hasMediaBytes(ctx context.Context, metadata MetadataContainer) bool {
+	if len(metadata.MediaContainer.Metadata) == 0 {
+		return false
+	}
+	for _, media := range metadata.MediaContainer.Metadata[0].Media {
+		if len(media.Part) == 0 || media.Part[0].Key == "" {
+			continue
+		}
+		body, err := c.API.DoRawHeadersLimited(ctx, "GET", media.Part[0].Key, url.Values{"download": []string{"1"}}, nil, http.Header{"Range": []string{"bytes=0-1024"}}, 1024)
+		if err == nil && len(body) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // Children is served by some PMS versions but is absent from the pinned OpenAPI contract.
 func (c *Client) Children(ctx context.Context, key string) (MetadataContainer, error) {
 	var v MetadataContainer
-	e := c.API.Do(ctx, "GET", "/library/metadata/"+url.PathEscape(key)+"/children", nil, nil, &v)
+	e := c.API.Do(ctx, "GET", metadataPath(key)+"/children", nil, nil, &v)
 	return v, e
 }
 func (c *Client) Sessions(ctx context.Context) (SessionContainer, error) {

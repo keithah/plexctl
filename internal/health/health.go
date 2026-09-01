@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/keithah/plexctl/internal/api"
@@ -63,7 +65,8 @@ func Check(ctx context.Context, c *pms.Client) Result {
 	if r := Ping(ctx, c); !r.OK {
 		return r
 	}
-	if _, e := c.Sections(ctx); e != nil {
+	sections, e := c.Sections(ctx)
+	if e != nil {
 		r := Result{OK: false, Classification: LibraryFailure, Stage: "library", Detail: e.Error(), Duration: time.Since(start)}
 		if isAuthFailure(e) {
 			r.Classification = AuthFailure
@@ -74,5 +77,31 @@ func Check(ctx context.Context, c *pms.Client) Result {
 		}
 		return r
 	}
-	return Result{OK: true, Classification: OK, Stage: "library", Detail: "identity and library access verified", Duration: time.Since(start)}
+	if len(sections.MediaContainer.Directory) == 0 {
+		return Result{OK: false, Classification: LibraryFailure, Stage: "library", Detail: "no libraries found", Duration: time.Since(start)}
+	}
+	for _, library := range sections.MediaContainer.Directory {
+		items, itemErr := c.Items(ctx, library.Key, url.Values{
+			"X-Plex-Container-Start": []string{"0"},
+			"X-Plex-Container-Size":  []string{strconv.Itoa(10)},
+		})
+		if itemErr != nil {
+			continue
+		}
+		probed := 0
+		attempted := 0
+		for _, item := range items.MediaContainer.Metadata {
+			if attempted >= 2 {
+				break
+			}
+			attempted++
+			if err := c.ProbeMedia(ctx, item.Key); err == nil {
+				probed++
+			}
+		}
+		if probed > 0 {
+			return Result{OK: true, Classification: OK, Stage: "media", Detail: "identity, library, and media access verified", Duration: time.Since(start)}
+		}
+	}
+	return Result{OK: false, Classification: LibraryFailure, Stage: "media", Detail: "no media items found", Duration: time.Since(start)}
 }
