@@ -2,6 +2,8 @@ package plexauth
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -11,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -52,11 +55,80 @@ type Resource struct {
 	Owned            bool         `json:"owned"`
 	Connections      []Connection `json:"connections"`
 }
+
 type Connection struct {
 	URI      string `json:"uri"`
 	Protocol string `json:"protocol"`
 	Local    bool   `json:"local"`
 	Relay    bool   `json:"relay"`
+}
+
+type resourceCacheEntry struct {
+	resources []Resource
+	at        time.Time
+}
+
+type ResourceCache struct {
+	mu      sync.Mutex
+	entries map[string]resourceCacheEntry
+}
+
+func NewResourceCache() *ResourceCache {
+	return &ResourceCache{entries: make(map[string]resourceCacheEntry)}
+}
+
+// Resources returns cached discovery only while it is within ttl. A failed or
+// expired refresh is never replaced with stale data, preserving Plex.tv as the
+// runtime authority for server connections.
+func (c *ResourceCache) Resources(ctx context.Context, client *Client, token string, ttl time.Duration) ([]Resource, error) {
+	if c == nil || ttl <= 0 {
+		return client.Resources(ctx, token)
+	}
+	key := client.BaseURL + "\x00" + client.ClientID + "\x00" + tokenCacheKey(token)
+	now := time.Now()
+	c.mu.Lock()
+	entry, ok := c.entries[key]
+	if ok && now.Sub(entry.at) < ttl {
+		resources := cloneResources(entry.resources)
+		c.mu.Unlock()
+		return resources, nil
+	}
+	c.mu.Unlock()
+
+	resources, err := client.Resources(ctx, token)
+	if err != nil {
+		c.mu.Lock()
+		delete(c.entries, key)
+		c.mu.Unlock()
+		return nil, err
+	}
+	c.mu.Lock()
+	c.entries[key] = resourceCacheEntry{resources: cloneResources(resources), at: time.Now()}
+	c.mu.Unlock()
+	return resources, nil
+}
+
+func (c *ResourceCache) Invalidate() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	clear(c.entries)
+	c.mu.Unlock()
+}
+
+func tokenCacheKey(token string) string {
+	h := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(h[:])
+}
+
+func cloneResources(in []Resource) []Resource {
+	out := make([]Resource, len(in))
+	for i, resource := range in {
+		out[i] = resource
+		out[i].Connections = append([]Connection(nil), resource.Connections...)
+	}
+	return out
 }
 
 type legacyResources struct {

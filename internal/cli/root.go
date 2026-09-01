@@ -864,11 +864,15 @@ func healthCmd(o *options) *cobra.Command {
 	}})
 	return cmd
 }
+
+const plexResourceCacheTTL = 30 * time.Second
+
 func serveCmd(o *options) *cobra.Command {
 	var listen string
+	resources := plexauth.NewResourceCache()
 	cmd := &cobra.Command{Use: "serve", Short: "Serve HTTP health endpoints for Uptime Kuma", RunE: func(*cobra.Command, []string) error {
 		h := monitor.Handler{Timeout: o.timeout, Resolve: func(account, server string) (*pms.Client, error) {
-			return resolveServeTarget(o, account, server)
+			return resolveServeTargetCached(o, account, server, resources)
 		}}
 		s := &http.Server{Addr: listen, Handler: h}
 		fmt.Fprintf(os.Stderr, "plexctl monitoring adapter listening on %s\n", listen)
@@ -879,6 +883,10 @@ func serveCmd(o *options) *cobra.Command {
 }
 
 func resolveServeTarget(o *options, account, server string) (*pms.Client, error) {
+	return resolveServeTargetCached(o, account, server, nil)
+}
+
+func resolveServeTargetCached(o *options, account, server string, resources *plexauth.ResourceCache) (*pms.Client, error) {
 	c, err := config.Load(config.Path())
 	if err != nil {
 		return nil, err
@@ -914,12 +922,12 @@ func resolveServeTarget(o *options, account, server string) (*pms.Client, error)
 		}
 		profile = c.ServersV2[candidates[0]]
 	}
-	return resolveFreshServeTarget(o, c, account, server, profile)
+	return resolveFreshServeTarget(o, c, account, server, profile, resources)
 }
 
 // resolveFreshServeTarget makes Plex.tv the runtime source of truth for PMS
 // connections. Persisted profile URLs are never used as a fallback.
-func resolveFreshServeTarget(o *options, c config.Config, account, requested string, profile config.ServerProfile) (*pms.Client, error) {
+func resolveFreshServeTarget(o *options, c config.Config, account, requested string, profile config.ServerProfile, resourceCache *plexauth.ResourceCache) (*pms.Client, error) {
 	a, ok := c.Accounts[account]
 	if !ok {
 		return nil, fmt.Errorf("account %q is not configured", account)
@@ -931,7 +939,7 @@ func resolveFreshServeTarget(o *options, c config.Config, account, requested str
 	ctx, cancel := commandContext(o)
 	defer cancel()
 	plex := plexauth.New("https://plex.tv", "plexctl", nil)
-	resources, err := plex.Resources(ctx, accountToken)
+	resources, err := resourceCache.Resources(ctx, plex, accountToken, plexResourceCacheTTL)
 	if err != nil {
 		return nil, fmt.Errorf("refresh Plex connections for %s: %w", account, err)
 	}

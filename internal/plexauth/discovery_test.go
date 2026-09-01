@@ -2,9 +2,11 @@ package plexauth
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestAccountAndResourceDiscovery(t *testing.T) {
@@ -35,6 +37,41 @@ func TestAccountAndResourceDiscovery(t *testing.T) {
 	}
 }
 
+func TestResourcesCacheUsesTTLAndSeparatesTokens(t *testing.T) {
+	var calls int
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/resources" {
+			http.NotFound(w, r)
+			return
+		}
+		calls++
+		w.Header().Set("Content-Type", "application/xml")
+		fmt.Fprintf(w, `<MediaContainer><Device name="server-%d" clientIdentifier="id-%d" provides="server" owned="1"><Connection uri="https://example.invalid" protocol="https" /></Device></MediaContainer>`, calls, calls)
+	}))
+	defer s.Close()
+	cache := NewResourceCache()
+	c := New(s.URL, "test", &http.Client{})
+	first, err := cache.Resources(context.Background(), c, "token-a", time.Minute)
+	if err != nil || len(first) != 1 {
+		t.Fatalf("first resources=%+v err=%v", first, err)
+	}
+	second, err := cache.Resources(context.Background(), c, "token-a", time.Minute)
+	if err != nil || len(second) != 1 || calls != 1 {
+		t.Fatalf("cached resources=%+v err=%v calls=%d", second, err, calls)
+	}
+	if _, err := cache.Resources(context.Background(), c, "token-b", time.Minute); err != nil {
+		t.Fatalf("second token discovery: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("token cache entries were not separated: calls=%d", calls)
+	}
+	if _, err := cache.Resources(context.Background(), c, "token-a", time.Nanosecond); err != nil {
+		t.Fatalf("expired discovery: %v", err)
+	}
+	if calls != 3 {
+		t.Fatalf("expired cache was reused: calls=%d", calls)
+	}
+}
 func TestResourcesPreferLegacyHTTPSConnections(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/xml")
