@@ -450,6 +450,13 @@ func TestSharingRemoveRequiresConfirmationAndDryRunMakesNoRequest(t *testing.T) 
 		t.Fatalf("requests=%d, want no request without --yes", requests)
 	}
 
+	if _, err := run(t, "sharing", "remove", "99", "--server", "owned-server", "--dry-run"); err == nil || !strings.Contains(err.Error(), "--yes") {
+		t.Fatalf("error=%v, want explicit --yes confirmation even for dry-run", err)
+	}
+	if requests != 0 {
+		t.Fatalf("requests=%d, want dry-run without --yes to make no request", requests)
+	}
+
 	var err error
 	out := captureStdout(t, func() {
 		_, err = run(t, "sharing", "remove", "99", "--server", "owned-server", "--yes", "--dry-run")

@@ -174,12 +174,12 @@ func sharingRemoveCmd(o *options) *cobra.Command {
 			if selector == "" {
 				selector = server
 			}
+			if !yes {
+				return fmt.Errorf("sharing remove requires explicit --yes confirmation")
+			}
 			if dryRun {
 				fmt.Printf("dry run: would revoke share %d on server %s (%s)\n", shareID, server, selector)
 				return nil
-			}
-			if !yes {
-				return fmt.Errorf("sharing remove requires explicit --yes confirmation")
 			}
 
 			_, account, token, err := sharingAccountToken(server)
