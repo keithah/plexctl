@@ -46,28 +46,35 @@ func TestSharedUsersSharing(t *testing.T) {
 }
 
 func TestSharedServerSectionsSharing(t *testing.T) {
-	token := "sharing-token"
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/api/servers/machine-1/shared_servers/99" {
-			http.NotFound(w, r)
-			return
-		}
-		assertPlexHeaders(t, r, token, "application/xml")
-		w.Header().Set("Content-Type", "application/xml")
-		_, _ = w.Write([]byte(`<SharedServer><Section id="7" key="1" shared="1" title="Movies" type="movie"/></SharedServer>`))
-	}))
-	defer server.Close()
+	for _, body := range []string{
+		`<SharedServer><Section id="7" key="1" shared="1" title="Movies" type="movie"/></SharedServer>`,
+		`<MediaContainer><SharedServer><Section id="7" key="1" shared="1" title="Movies" type="movie"/></SharedServer></MediaContainer>`,
+	} {
+		t.Run("xml envelope", func(t *testing.T) {
+			token := "sharing-token"
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != "/api/servers/machine-1/shared_servers/99" {
+					http.NotFound(w, r)
+					return
+				}
+				assertPlexHeaders(t, r, token, "application/xml")
+				w.Header().Set("Content-Type", "application/xml")
+				_, _ = w.Write([]byte(body))
+			}))
+			defer server.Close()
 
-	sections, err := New(server.URL, "plexctl-test", server.Client()).SharedServerSections(context.Background(), token, "machine-1", 99)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(sections) != 1 {
-		t.Fatalf("got %d sections, want 1", len(sections))
-	}
-	section := sections[0]
-	if section.ID != 7 || section.Key != 1 || !section.Shared || section.Title != "Movies" || section.Type != "movie" {
-		t.Fatalf("unexpected section: %+v", section)
+			sections, err := New(server.URL, "plexctl-test", server.Client()).SharedServerSections(context.Background(), token, "machine-1", 99)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(sections) != 1 {
+				t.Fatalf("got %d sections, want 1", len(sections))
+			}
+			section := sections[0]
+			if section.ID != 7 || section.Key != 1 || !section.Shared || section.Title != "Movies" || section.Type != "movie" {
+				t.Fatalf("unexpected section: %+v", section)
+			}
+		})
 	}
 }
 

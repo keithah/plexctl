@@ -291,14 +291,27 @@ func (c *Client) SharedUsers(ctx context.Context, token string) ([]SharedUser, e
 // shareID is the nested Server.id from SharedUsers, never ServerID.
 func (c *Client) SharedServerSections(ctx context.Context, token, machineID string, shareID int) ([]LibrarySection, error) {
 	var payload struct {
-		XMLName  xml.Name         `xml:"SharedServer"`
-		Sections []LibrarySection `xml:"Section"`
+		XMLName      xml.Name         `xml:""`
+		Sections     []LibrarySection `xml:"Section"`
+		SharedServer struct {
+			Sections []LibrarySection `xml:"Section"`
+		} `xml:"SharedServer"`
 	}
 	path := "/api/servers/" + url.PathEscape(machineID) + "/shared_servers/" + strconv.Itoa(shareID)
 	if err := c.getXML(ctx, path, token, &payload); err != nil {
 		return nil, err
 	}
-	return payload.Sections, nil
+	switch payload.XMLName.Local {
+	case "SharedServer":
+		return payload.Sections, nil
+	case "MediaContainer":
+		if len(payload.SharedServer.Sections) > 0 {
+			return payload.SharedServer.Sections, nil
+		}
+		return payload.Sections, nil
+	default:
+		return nil, fmt.Errorf("unexpected Plex shared-server root %q", payload.XMLName.Local)
+	}
 }
 
 // ServerLibraries lists selectable Plex.tv sharing-library sections for one
