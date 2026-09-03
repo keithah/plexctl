@@ -8,7 +8,7 @@ The feature manages external Plex accounts invited to share a server. Plex Home 
 
 ## Goals
 
-- List external shared users with Plex username, email when returned by Plex, invitation state, and per-server library grants.
+- List external shared users with Plex username, email when returned by Plex, nested server-share state, and per-server library grants. Pending outgoing invites are listed separately when Plex returns them.
 - List eligible library sections for a selected owned server before a grant is created or replaced.
 - Invite an external account by email address or Plex username.
 - Replace an existing external share's library grants and sharing settings.
@@ -35,7 +35,7 @@ plexctl sharing update <share-id> --server <name-or-client-identifier> (--librar
 plexctl sharing remove <share-id> --server <name-or-client-identifier> --yes
 ```
 
-`sharing users` is read-only and returns a stable JSON shape with account identity, email when present, invite state, share ID, target-server identity, libraries, and supported sharing settings. Human output is a concise table. Missing email is represented as absent/null; the CLI must not infer or synthesize one.
+`sharing users` is read-only and returns a stable JSON shape with account identity, email when present, nested-share pending state, share ID, target-server identity, and grants. Pending outgoing invitations come from Plex's separate requested-invites response and remain distinct from established accounts. Human output is a concise table. Missing email is represented as absent/null; the CLI must not infer or synthesize one.
 
 `sharing libraries` is read-only and returns the Plex.tv library-section IDs and names associated with the selected owned server. It exists to make mutation input auditable and avoid using local, stale, or guessed section IDs.
 
@@ -53,17 +53,17 @@ Shares are addressed by Plex.tv's server-share identifier, not an email or displ
 
 ## Plex.tv Client Boundary
 
-Add a narrow `internal/sharing` package with a typed Plex.tv client. It receives an authenticated Plex.tv transport/client and exposes:
+Extend `internal/plexauth`, the existing protected Plex.tv credential and resource-discovery boundary, with a narrow typed sharing surface:
 
-- `ListUsers(ctx)`
-- `ListServerLibraries(ctx, server)`
-- `Invite(ctx, request)`
-- `Update(ctx, request)`
-- `Remove(ctx, server, shareID)`
+- `ListUsers(ctx)` from `GET /api/users/` (XML)
+- `ListRequestedInvites(ctx)` from `GET /api/invites/requested` (XML)
+- `ListServerLibraries(ctx, server)` from `GET /api/servers/{machineIdentifier}` (XML)
+- `ListShareSections(ctx, server, shareID)` from `GET /api/servers/{machineIdentifier}/shared_servers/{shareID}` (XML)
+- `Invite(ctx, request)`, `Update(ctx, request)`, and `Remove(ctx, server, shareID)` using the separately verified typed mutation paths
 
 The boundary applies current repository conventions: `X-Plex-Token`, standard Plex client headers, context propagation, bounded response reads, typed HTTP/status errors, and adaptive rate limiting. It validates response shape before presenting data.
 
-The client uses the current Plex.tv external-sharing endpoints under `/api/servers/{machineIdentifier}/shared_servers` and sends only typed request fields. Endpoint/body details are confirmed against real read-only account data before mutations are implemented; request-shape tests use `httptest`.
+The shared-users response is XML and each nested `Server.id` is the share ID; it must never be confused with the distinct `Server.serverId`. Library grants are read from the per-share detail endpoint. Endpoint/body details are confirmed against maintained-client behavior and real read-only account data before mutations are implemented; request-shape tests use `httptest`.
 
 ## Safety and MCP Policy
 
