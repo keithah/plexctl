@@ -66,27 +66,37 @@ type User struct {
 	Email    string `json:"email"`
 }
 
-// SharedUser is an external Plex account that can be invited to or connected
-// through a server share. Email is nil when Plex does not report one.
+// SharedUser is an external Plex account connected through a server share.
+// Email is nil when Plex does not report one. Plex returns this data as XML.
 type SharedUser struct {
-	ID       int     `json:"id"`
-	Username string  `json:"username"`
-	Email    *string `json:"email"`
-	Invited  bool    `json:"invited"`
-	Friend   bool    `json:"friend"`
+	ID           int            `xml:"id,attr"`
+	Username     string         `xml:"username,attr"`
+	Email        *string        `xml:"email,attr"`
+	Home         bool           `xml:"home,attr"`
+	ServerShares []SharedServer `xml:"Server"`
 }
 
-// SharedServer is an external account's share on a Plex Media Server.
+// SharedServer is one external account's share on a Plex Media Server. ID is
+// the share identifier used by the shared_servers detail/update/delete path;
+// ServerID is Plex's distinct internal server identifier.
 type SharedServer struct {
-	ID                int   `json:"id"`
-	UserID            int   `json:"userID"`
-	LibrarySectionIDs []int `json:"librarySectionIDs"`
-	AllLibraries      bool  `json:"allLibraries"`
-	AllowSync         bool  `json:"allowSync"`
-	AllowCameraUpload bool  `json:"allowCameraUpload"`
-	AllowChannels     bool  `json:"allowChannels"`
-	AllowTuners       bool  `json:"allowTuners"`
-	AllowDownloads    bool  `json:"allowDownloads"`
+	ID                int    `xml:"id,attr"`
+	ServerID          int    `xml:"serverId,attr"`
+	MachineIdentifier string `xml:"machineIdentifier,attr"`
+	Name              string `xml:"name,attr"`
+	AllLibraries      bool   `xml:"allLibraries,attr"`
+	Pending           bool   `xml:"pending,attr"`
+	Owned             bool   `xml:"owned,attr"`
+}
+
+// LibrarySection is a Plex library section reported by a shared-server detail
+// response. Key is the library ID accepted by Plex sharing mutations.
+type LibrarySection struct {
+	ID     int    `xml:"id,attr"`
+	Key    int    `xml:"key,attr"`
+	Shared bool   `xml:"shared,attr"`
+	Title  string `xml:"title,attr"`
+	Type   string `xml:"type,attr"`
 }
 
 // HTTPError reports a non-success Plex.tv response without retaining its body.
@@ -255,23 +265,31 @@ func (c *Client) User(ctx context.Context, token string) (User, error) {
 	return v, err
 }
 
-// SharedUsers lists external Plex accounts and their invitation or friendship state.
+// SharedUsers lists external Plex accounts and the server shares Plex reports
+// for each account. Plex's established sharing endpoint returns XML, not JSON.
 func (c *Client) SharedUsers(ctx context.Context, token string) ([]SharedUser, error) {
-	var users []SharedUser
-	if err := c.getJSON(ctx, "/api/users", token, &users); err != nil {
+	var payload struct {
+		XMLName xml.Name     `xml:"MediaContainer"`
+		Users   []SharedUser `xml:"User"`
+	}
+	if err := c.getXML(ctx, "/api/users/", token, &payload); err != nil {
 		return nil, err
 	}
-	return users, nil
+	return payload.Users, nil
 }
 
-// SharedServers lists external server shares for the selected Plex Media Server.
-func (c *Client) SharedServers(ctx context.Context, token, machineID string) ([]SharedServer, error) {
-	var shares []SharedServer
-	path := "/api/servers/" + url.PathEscape(machineID) + "/shared_servers"
-	if err := c.getJSON(ctx, path, token, &shares); err != nil {
+// SharedServerSections lists the exact library grants of one external share.
+// shareID is the nested Server.id from SharedUsers, never ServerID.
+func (c *Client) SharedServerSections(ctx context.Context, token, machineID string, shareID int) ([]LibrarySection, error) {
+	var payload struct {
+		XMLName  xml.Name         `xml:"SharedServer"`
+		Sections []LibrarySection `xml:"Section"`
+	}
+	path := "/api/servers/" + url.PathEscape(machineID) + "/shared_servers/" + strconv.Itoa(shareID)
+	if err := c.getXML(ctx, path, token, &payload); err != nil {
 		return nil, err
 	}
-	return shares, nil
+	return payload.Sections, nil
 }
 
 func (c *Client) Resources(ctx context.Context, token string) ([]Resource, error) {
@@ -403,6 +421,33 @@ func (c *Client) getJSON(ctx context.Context, path, token string, out any) error
 	}
 	return nil
 }
+func (c *Client) getXML(ctx context.Context, path, token string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/xml")
+	req.Header.Set("X-Plex-Client-Identifier", c.ClientID)
+	req.Header.Set("X-Plex-Product", c.Product)
+	req.Header.Set("X-Plex-Token", token)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	data, err := readLimited(resp.Body, 4<<20, "Plex")
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &HTTPError{StatusCode: resp.StatusCode, Method: http.MethodGet, Path: path}
+	}
+	if err := xml.Unmarshal(data, out); err != nil {
+		return fmt.Errorf("decode Plex response: %w", err)
+	}
+	return nil
+}
+
 func (c *Client) request(ctx context.Context, method, path string, query url.Values, out *pinResponse) error {
 	u := c.BaseURL + path
 	if len(query) != 0 {

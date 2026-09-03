@@ -12,13 +12,13 @@ import (
 func TestSharedUsersSharing(t *testing.T) {
 	token := "sharing-token"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/api/users" {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/users/" {
 			http.NotFound(w, r)
 			return
 		}
-		assertPlexHeaders(t, r, token)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`[{"id":42,"username":"friend","email":"friend@example.com","invited":true,"friend":false}]`))
+		assertPlexHeaders(t, r, token, "application/xml")
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = w.Write([]byte(`<MediaContainer><User id="42" username="friend" email="friend@example.com" home="0"><Server id="99" serverId="123" machineIdentifier="machine-1" name="Plex" allLibraries="0" pending="1" owned="1"/></User></MediaContainer>`))
 	}))
 	defer server.Close()
 
@@ -29,37 +29,42 @@ func TestSharedUsersSharing(t *testing.T) {
 	if len(users) != 1 {
 		t.Fatalf("got %d users, want 1", len(users))
 	}
-	if users[0].ID != 42 || users[0].Username != "friend" || users[0].Email == nil || *users[0].Email != "friend@example.com" || !users[0].Invited || users[0].Friend {
-		t.Fatalf("unexpected shared user: %+v", users[0])
+	user := users[0]
+	if user.ID != 42 || user.Username != "friend" || user.Email == nil || *user.Email != "friend@example.com" || user.Home {
+		t.Fatalf("unexpected shared user: %+v", user)
+	}
+	if len(user.ServerShares) != 1 {
+		t.Fatalf("shares=%+v, want one", user.ServerShares)
+	}
+	share := user.ServerShares[0]
+	if share.ID != 99 || share.ServerID != 123 || share.MachineIdentifier != "machine-1" || share.Name != "Plex" || share.AllLibraries || !share.Pending || !share.Owned {
+		t.Fatalf("unexpected server share: %+v", share)
 	}
 }
 
-func TestSharedServersSharing(t *testing.T) {
+func TestSharedServerSectionsSharing(t *testing.T) {
 	token := "sharing-token"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/api/servers/machine-1/shared_servers" {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/servers/machine-1/shared_servers/99" {
 			http.NotFound(w, r)
 			return
 		}
-		assertPlexHeaders(t, r, token)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`[{"id":99,"userID":42,"librarySectionIDs":[1,2],"allLibraries":false,"allowSync":true,"allowDownloads":false}]`))
+		assertPlexHeaders(t, r, token, "application/xml")
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = w.Write([]byte(`<SharedServer><Section id="7" key="1" shared="1" title="Movies" type="movie"/></SharedServer>`))
 	}))
 	defer server.Close()
 
-	shares, err := New(server.URL, "plexctl-test", server.Client()).SharedServers(context.Background(), token, "machine-1")
+	sections, err := New(server.URL, "plexctl-test", server.Client()).SharedServerSections(context.Background(), token, "machine-1", 99)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(shares) != 1 {
-		t.Fatalf("got %d shares, want 1", len(shares))
+	if len(sections) != 1 {
+		t.Fatalf("got %d sections, want 1", len(sections))
 	}
-	share := shares[0]
-	if share.ID != 99 || share.UserID != 42 || len(share.LibrarySectionIDs) != 2 || share.LibrarySectionIDs[0] != 1 || share.LibrarySectionIDs[1] != 2 {
-		t.Fatalf("unexpected shared server: %+v", share)
-	}
-	if share.AllLibraries || !share.AllowSync || share.AllowDownloads {
-		t.Fatalf("unexpected share settings: %+v", share)
+	section := sections[0]
+	if section.ID != 7 || section.Key != 1 || !section.Shared || section.Title != "Movies" || section.Type != "movie" {
+		t.Fatalf("unexpected section: %+v", section)
 	}
 }
 
@@ -74,7 +79,7 @@ func TestSharedUsersSharingReturnsStatusError(t *testing.T) {
 		t.Fatalf("users=%+v, want nil", users)
 	}
 	var statusErr *HTTPError
-	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusForbidden {
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusForbidden || statusErr.Path != "/api/users/" {
 		t.Fatalf("error=%v, want HTTP status error for %d", err, http.StatusForbidden)
 	}
 }
@@ -84,13 +89,14 @@ func TestSharedUsersSharingRejectsMalformedAndOversizedResponses(t *testing.T) {
 		name string
 		body string
 	}{
-		{name: "malformed", body: `[{`},
-		{name: "oversized", body: strings.Repeat("x", (2<<20)+1)},
+		{name: "malformed", body: `<MediaContainer><User>`},
+		{name: "unexpected root", body: `<NotUsers/>`},
+		{name: "oversized", body: strings.Repeat("x", (4<<20)+1)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Content-Type", "application/xml")
 				_, _ = w.Write([]byte(tc.body))
 			}))
 			defer server.Close()
@@ -106,10 +112,10 @@ func TestSharedUsersSharingRejectsMalformedAndOversizedResponses(t *testing.T) {
 	}
 }
 
-func assertPlexHeaders(t *testing.T, r *http.Request, token string) {
+func assertPlexHeaders(t *testing.T, r *http.Request, token, accept string) {
 	t.Helper()
-	if got := r.Header.Get("Accept"); got != "application/json" {
-		t.Errorf("Accept=%q, want application/json", got)
+	if got := r.Header.Get("Accept"); got != accept {
+		t.Errorf("Accept=%q, want %q", got, accept)
 	}
 	if got := r.Header.Get("X-Plex-Client-Identifier"); got != "plexctl-test" {
 		t.Errorf("X-Plex-Client-Identifier=%q, want plexctl-test", got)
