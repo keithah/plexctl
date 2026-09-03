@@ -380,6 +380,39 @@ func (c *Client) Invite(ctx context.Context, token string, invite InviteRequest)
 	return nil
 }
 
+// RemoveShare revokes exactly one external Plex server share. shareID is the
+// nested Server.id from SharedUsers, never ServerID. Plex's delete contract has
+// no documented JSON payload, so this request deliberately has no body.
+func (c *Client) RemoveShare(ctx context.Context, token, machineID string, shareID int) error {
+	if machineID == "" {
+		return fmt.Errorf("share removal requires a server machine identifier")
+	}
+	if shareID <= 0 {
+		return fmt.Errorf("share removal requires a positive share ID")
+	}
+	path := "/api/servers/" + url.PathEscape(machineID) + "/shared_servers/" + strconv.Itoa(shareID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.BaseURL+path, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Plex-Client-Identifier", c.ClientID)
+	req.Header.Set("X-Plex-Product", c.Product)
+	req.Header.Set("X-Plex-Token", token)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if _, err := readLimited(resp.Body, 1<<20, "Plex share removal"); err != nil {
+		return err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &HTTPError{StatusCode: resp.StatusCode, Method: http.MethodDelete, Path: path}
+	}
+	return nil
+}
+
 // UpdateShare replaces the complete library grant set for one exact external
 // Plex share. Library section IDs are global Plex.tv IDs, not local PMS keys.
 // It does not fetch or merge the prior grant set.

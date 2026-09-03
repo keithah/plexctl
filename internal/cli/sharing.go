@@ -44,7 +44,7 @@ type sharingUserOutput struct {
 
 func sharingCmd(o *options) *cobra.Command {
 	cmd := &cobra.Command{Use: "sharing", Short: "Inspect Plex library sharing"}
-	cmd.AddCommand(sharingUsersCmd(o), sharingLibrariesCmd(o), sharingInviteCmd(o), sharingUpdateCmd(o))
+	cmd.AddCommand(sharingUsersCmd(o), sharingLibrariesCmd(o), sharingInviteCmd(o), sharingUpdateCmd(o), sharingRemoveCmd(o))
 	return cmd
 }
 
@@ -146,6 +146,64 @@ func sharingLibrariesCmd(o *options) *cobra.Command {
 		}
 		return nil
 	}}
+}
+
+func sharingRemoveCmd(o *options) *cobra.Command {
+	var yes bool
+	var dryRun bool
+	cmd := &cobra.Command{
+		Use:   "remove <share-id>",
+		Short: "Revoke one external Plex server share",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			shareID, err := strconv.Atoi(args[0])
+			if err != nil || shareID <= 0 {
+				return fmt.Errorf("share ID must be a positive integer, got %q", args[0])
+			}
+			if o.server == "" {
+				return fmt.Errorf("sharing remove requires --server")
+			}
+			server, profile, err := sharingInviteProfile(o.server)
+			if err != nil {
+				return err
+			}
+			selector := profile.MachineIdentifier
+			if selector == "" {
+				selector = server
+			}
+			if dryRun {
+				fmt.Printf("dry run: would revoke share %d on server %s (%s)\n", shareID, server, selector)
+				return nil
+			}
+			if !yes {
+				return fmt.Errorf("sharing remove requires explicit --yes confirmation")
+			}
+
+			_, account, token, err := sharingAccountToken(server)
+			if err != nil {
+				return err
+			}
+			ctx, cancel := commandContext(o)
+			defer cancel()
+			plex := sharingPlexClient()
+			resources, err := plex.Resources(ctx, token)
+			if err != nil {
+				return fmt.Errorf("refresh Plex resources for %s: %w", account, err)
+			}
+			resource, err := plexauth.ResolveOwnedResource(resources, selector)
+			if err != nil {
+				return err
+			}
+			if err := plex.RemoveShare(ctx, token, resource.ClientIdentifier, shareID); err != nil {
+				return err
+			}
+			fmt.Printf("REVOKED share %d on server %s (%s)\n", shareID, resource.Name, resource.ClientIdentifier)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&yes, "yes", false, "confirm revocation of this exact share")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the exact revocation target without making network requests")
+	return cmd
 }
 
 func sharingUpdateCmd(o *options) *cobra.Command {

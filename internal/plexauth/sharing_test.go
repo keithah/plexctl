@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -291,6 +292,84 @@ func TestSharingUpdateReplacesOnlyRequestedLibraries(t *testing.T) {
 	}
 	if requests != 1 {
 		t.Fatalf("requests=%d, want exactly one PUT without grant fetch or retry", requests)
+	}
+}
+
+func TestSharingRemoveSendsExactBodylessDelete(t *testing.T) {
+	token := "sharing-token"
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Method != http.MethodDelete || r.URL.Path != "/api/servers/machine-1/shared_servers/99" {
+			http.NotFound(w, r)
+			return
+		}
+		assertPlexHeaders(t, r, token, "application/json")
+		if r.Body == nil {
+			t.Fatal("DELETE request body is nil; want a readable empty body")
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(body) != 0 {
+			t.Fatalf("DELETE body=%q, want no request body", body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	err := New(server.URL, "plexctl-test", server.Client()).RemoveShare(context.Background(), token, "machine-1", 99)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests=%d, want exactly one DELETE", requests)
+	}
+}
+
+func TestSharingRemoveRejectsInvalidInputWithoutRequest(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		http.Error(w, "unexpected request", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	client := New(server.URL, "plexctl-test", server.Client())
+
+	for _, tc := range []struct {
+		name    string
+		machine string
+		shareID int
+	}{
+		{name: "empty machine", shareID: 99},
+		{name: "nonpositive share", machine: "machine-1", shareID: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := client.RemoveShare(context.Background(), "sharing-token", tc.machine, tc.shareID); err == nil {
+				t.Fatal("expected validation error")
+			}
+		})
+	}
+	if requests != 0 {
+		t.Fatalf("requests=%d, want no request for invalid removal", requests)
+	}
+}
+
+func TestSharingRemoveReturnsTypedStatusError(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(status)
+			}))
+			defer server.Close()
+
+			err := New(server.URL, "plexctl-test", server.Client()).RemoveShare(context.Background(), "sharing-token", "machine-1", 99)
+			var statusErr *HTTPError
+			if !errors.As(err, &statusErr) || statusErr.StatusCode != status || statusErr.Method != http.MethodDelete || statusErr.Path != "/api/servers/machine-1/shared_servers/99" {
+				t.Fatalf("error=%v, want typed DELETE status error for %d", err, status)
+			}
+		})
 	}
 }
 
