@@ -17,7 +17,7 @@ func TestSharingUsersJSONShowsNestedShareStateAndGrants(t *testing.T) {
 		switch r.URL.Path {
 		case "/api/users/":
 			w.Header().Set("Content-Type", "application/xml")
-			_, _ = w.Write([]byte(`<MediaContainer><User username="friend" email="friend@example.com"><Server id="99" serverId="123" machineIdentifier="owned-server" name="Owned Server" allLibraries="0" pending="1" owned="1"/></User></MediaContainer>`))
+			_, _ = w.Write([]byte(`<MediaContainer><User username="home-user" home="1"><Server id="1" serverId="1" machineIdentifier="owned-server" name="Owned Server"/></User><User username="friend" email="friend@example.com"><Server id="99" serverId="123" machineIdentifier="owned-server" name="Owned Server" allLibraries="0" pending="1" owned="1"/></User></MediaContainer>`))
 		case "/api/servers/owned-server/shared_servers/99":
 			w.Header().Set("Content-Type", "application/xml")
 			_, _ = w.Write([]byte(`<SharedServer><Section id="7" key="1" shared="1" title="Movies" type="movie"/></SharedServer>`))
@@ -50,7 +50,7 @@ func TestSharingUsersJSONShowsNestedShareStateAndGrants(t *testing.T) {
 		t.Fatalf("invalid JSON %q: %v", out, err)
 	}
 	if len(users) != 1 || users[0].Username != "friend" || users[0].Email == nil || *users[0].Email != "friend@example.com" {
-		t.Fatalf("users=%+v, want friend with returned email", users)
+		t.Fatalf("users=%+v, want only external friend with returned email", users)
 	}
 	if len(users[0].Shares) != 1 {
 		t.Fatalf("shares=%+v, want one nested share", users[0].Shares)

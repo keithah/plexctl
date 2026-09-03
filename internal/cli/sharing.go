@@ -64,6 +64,9 @@ func sharingUsersCmd(o *options) *cobra.Command {
 		}
 		out := make([]sharingUserOutput, 0, len(users))
 		for _, user := range users {
+			if user.Home {
+				continue
+			}
 			item := sharingUserOutput{Username: user.Username, Email: user.Email, Home: user.Home, Shares: make([]sharingServerOutput, 0, len(user.ServerShares))}
 			for _, share := range user.ServerShares {
 				resource, err := plexauth.ResolveOwnedResource(resources, share.MachineIdentifier)
@@ -80,8 +83,10 @@ func sharingUsersCmd(o *options) *cobra.Command {
 					AllLibraries: share.AllLibraries, Grants: sharingLibrariesOutput(grants),
 				})
 			}
+			sort.SliceStable(item.Shares, func(i, j int) bool { return item.Shares[i].ShareID < item.Shares[j].ShareID })
 			out = append(out, item)
 		}
+		sort.SliceStable(out, func(i, j int) bool { return out[i].Username < out[j].Username })
 		if o.jsonOut {
 			printValue(out, true)
 		} else {
