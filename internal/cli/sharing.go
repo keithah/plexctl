@@ -72,6 +72,9 @@ func sharingUsersCmd(o *options) *cobra.Command {
 			}
 			item := sharingUserOutput{Username: user.Username, Email: user.Email, Home: user.Home, Shares: make([]sharingServerOutput, 0, len(user.ServerShares))}
 			for _, share := range user.ServerShares {
+				if !share.Owned {
+					continue
+				}
 				resource, err := plexauth.ResolveOwnedResource(resources, share.MachineIdentifier)
 				if err != nil {
 					return fmt.Errorf("resolve share %d for %s: %w", share.ID, user.Username, err)
