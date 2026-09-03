@@ -8,10 +8,10 @@ The feature manages external Plex accounts invited to share a server. Plex Home 
 
 ## Goals
 
-- List external shared users with Plex username, email when returned by Plex, nested server-share state, and per-server library grants. Pending outgoing invites are listed separately when Plex returns them.
+- List external shared users with Plex username, email when returned by Plex, nested server-share state, and per-server library grants. Pending outgoing invite listings are deferred.
 - List eligible library sections for a selected owned server before a grant is created or replaced.
 - Invite an external account by email address or Plex username.
-- Replace an existing external share's library grants and sharing settings.
+- Replace an existing external share's library grants. Editing Plex sharing settings is deferred pending a separate verified response/payload contract.
 - Revoke an external share only after explicit confirmation.
 - Reuse the existing protected Plex.tv credential and fresh resource discovery path. Tokens and passwords must never be command-line arguments, written to output, or persisted by this feature.
 
@@ -35,13 +35,13 @@ plexctl sharing update <share-id> --server <name-or-client-identifier> (--librar
 plexctl sharing remove <share-id> --server <name-or-client-identifier> --yes
 ```
 
-`sharing users` is read-only and returns a stable JSON shape with account identity, email when present, nested-share pending state, share ID, target-server identity, and grants. Pending outgoing invitations come from Plex's separate requested-invites response and remain distinct from established accounts. Human output is a concise table. Missing email is represented as absent/null; the CLI must not infer or synthesize one.
+`sharing users` is read-only and returns a stable JSON shape with account identity, email when present, nested-share pending state, share ID, target-server identity, and grants. It lists established external shares; pending outgoing invitations are deferred. Human output is a concise table. Missing email is represented as absent/null; the CLI must not infer or synthesize one.
 
 `sharing libraries` is read-only and returns the Plex.tv library-section IDs and names associated with the selected owned server. It exists to make mutation input auditable and avoid using local, stale, or guessed section IDs.
 
 `invite` accepts exactly one unambiguous external identifier. It creates an external server share using the selected owned server and requested section grants. `update` replaces the grant set rather than merging it. `remove` revokes precisely one server-share link.
 
-The first release manages library access only. It reports any Plex-provided sharing settings in `sharing users` output but does not expose setting-edit flags until their live response and mutation semantics are independently verified. Unsupported flags fail as usage errors rather than being silently ignored.
+The first release manages library access only. It does not report or edit Plex sharing settings until their live response and mutation semantics are independently verified. Unsupported flags fail as usage errors rather than being silently ignored.
 
 ## Identity and Resolution
 
