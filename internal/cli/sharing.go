@@ -197,6 +197,13 @@ func sharingRemoveCmd(o *options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			users, err := plex.SharedUsers(ctx, token)
+			if err != nil {
+				return err
+			}
+			if err := plexauth.ValidateExternalOwnedShare(users, resource.ClientIdentifier, shareID); err != nil {
+				return err
+			}
 			if err := plex.RemoveShare(ctx, token, resource.ClientIdentifier, shareID); err != nil {
 				return err
 			}
@@ -259,6 +266,13 @@ func sharingUpdateCmd(o *options) *cobra.Command {
 			}
 			resource, err := plexauth.ResolveOwnedResource(resources, selector)
 			if err != nil {
+				return err
+			}
+			users, err := plex.SharedUsers(ctx, token)
+			if err != nil {
+				return err
+			}
+			if err := plexauth.ValidateExternalOwnedShare(users, resource.ClientIdentifier, shareID); err != nil {
 				return err
 			}
 			libraries, err := plex.ServerLibraries(ctx, token, resource.ClientIdentifier)

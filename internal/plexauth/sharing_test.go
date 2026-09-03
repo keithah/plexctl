@@ -178,6 +178,46 @@ func TestResolveOwnedResourceSharing(t *testing.T) {
 	})
 }
 
+func TestValidateExternalOwnedShare(t *testing.T) {
+	users := []SharedUser{
+		{Username: "home", Home: true, ServerShares: []SharedServer{{ID: 101, MachineIdentifier: "machine-1", Owned: true}}},
+		{Username: "foreign", Home: false, ServerShares: []SharedServer{
+			{ID: 102, MachineIdentifier: "machine-1", Owned: false},
+			{ID: 103, MachineIdentifier: "other-machine", Owned: true},
+			{ID: 104, MachineIdentifier: "machine-1", Owned: true},
+			{ID: 105, MachineIdentifier: "machine-1", Owned: true},
+		}},
+		{Username: "another", Home: false, ServerShares: []SharedServer{{ID: 105, MachineIdentifier: "machine-1", Owned: true}}},
+	}
+
+	for _, tc := range []struct {
+		name    string
+		machine string
+		shareID int
+		wantErr bool
+	}{
+		{name: "valid exact external owned share", machine: "machine-1", shareID: 104},
+		{name: "missing share", machine: "machine-1", shareID: 999, wantErr: true},
+		{name: "Home user share", machine: "machine-1", shareID: 101, wantErr: true},
+		{name: "foreign non-owned share", machine: "machine-1", shareID: 102, wantErr: true},
+		{name: "stale mismatched server share", machine: "machine-1", shareID: 103, wantErr: true},
+		{name: "ambiguous share", machine: "machine-1", shareID: 105, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateExternalOwnedShare(users, tc.machine, tc.shareID)
+			if tc.wantErr && err == nil {
+				t.Fatal("expected external-share validation failure")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantErr && !strings.Contains(err.Error(), "external") {
+				t.Fatalf("error=%q, want safe external-share failure", err)
+			}
+		})
+	}
+}
+
 func TestServerLibrariesSharing(t *testing.T) {
 	token := "sharing-token"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -241,6 +241,84 @@ func TestSharingInvitePreflightAndMutationSafety(t *testing.T) {
 	})
 }
 
+func TestSharingMutationsRequireFreshExactExternalShare(t *testing.T) {
+	for _, operation := range []string{"update", "remove"} {
+		t.Run(operation, func(t *testing.T) {
+			for _, tc := range []struct {
+				name       string
+				shareID    string
+				wantMutate bool
+			}{
+				{name: "Home user share", shareID: "101"},
+				{name: "foreign non-owned share", shareID: "102"},
+				{name: "stale mismatched server share", shareID: "103"},
+				{name: "valid external owned share", shareID: "104", wantMutate: true},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					mutations := 0
+					usersRequested := false
+					server := sharingTestServer(t, `<MediaContainer><Device name="Resolved Server" clientIdentifier="resolved-machine" provides="server" owned="1"/></MediaContainer>`, func(w http.ResponseWriter, r *http.Request) {
+						switch r.URL.Path {
+						case "/api/users/":
+							usersRequested = true
+							w.Header().Set("Content-Type", "application/xml")
+							_, _ = w.Write([]byte(`<MediaContainer><User username="home" home="1"><Server id="101" machineIdentifier="resolved-machine" owned="1"/></User><User username="foreign" home="0"><Server id="102" machineIdentifier="resolved-machine" owned="0"/><Server id="103" machineIdentifier="other-machine" owned="1"/><Server id="104" machineIdentifier="resolved-machine" owned="1"/></User></MediaContainer>`))
+						case "/api/servers/resolved-machine":
+							w.Header().Set("Content-Type", "application/xml")
+							_, _ = w.Write([]byte(`<MediaContainer><Server><Section id="7" key="1" title="Movies"/></Server></MediaContainer>`))
+						case "/api/servers/resolved-machine/shared_servers/" + tc.shareID:
+							mutations++
+							if !tc.wantMutate {
+								t.Errorf("unsafe %s for share %s", r.Method, tc.shareID)
+							}
+							if operation == "update" && r.Method != http.MethodPut {
+								t.Errorf("method=%s, want PUT", r.Method)
+							}
+							if operation == "remove" && r.Method != http.MethodDelete {
+								t.Errorf("method=%s, want DELETE", r.Method)
+							}
+							w.WriteHeader(http.StatusNoContent)
+						default:
+							http.NotFound(w, r)
+						}
+					})
+					configureSharingTestAccount(t, "alice", "configured-server", "resolved-machine", "account-token")
+					useSharingPlexServer(t, server)
+
+					args := []string{"sharing", operation, tc.shareID, "--server", "configured-server"}
+					if operation == "update" {
+						args = append(args, "--libraries", "7")
+					} else {
+						args = append(args, "--yes")
+					}
+					_, err := run(t, args...)
+					if tc.wantMutate {
+						if err != nil {
+							t.Fatal(err)
+						}
+						if mutations != 1 {
+							t.Fatalf("mutations=%d, want one %s", mutations, operation)
+						}
+					} else {
+						if err == nil || !strings.Contains(err.Error(), "external") {
+							t.Fatalf("error=%v, want external-share authorization failure", err)
+						}
+						if strings.Contains(err.Error(), "account-token") {
+							t.Fatalf("error leaked Plex token: %q", err)
+						}
+						if mutations != 0 {
+							t.Fatalf("mutations=%d, want zero", mutations)
+						}
+					}
+					if !usersRequested {
+						t.Fatal("fresh shared-user list was not requested")
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestSharingUpdatePreflightAndReplacementSafety(t *testing.T) {
 	t.Run("requires explicit server selector", func(t *testing.T) {
 		requests := 0
@@ -289,6 +367,9 @@ func TestSharingUpdatePreflightAndReplacementSafety(t *testing.T) {
 		putReached := false
 		server := sharingTestServer(t, `<MediaContainer><Device name="Owned Server" clientIdentifier="machine-1" provides="server" owned="1"/></MediaContainer>`, func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
+			case "/api/users/":
+				w.Header().Set("Content-Type", "application/xml")
+				_, _ = w.Write([]byte(`<MediaContainer><User username="friend" home="0"><Server id="99" machineIdentifier="machine-1" owned="1"/></User></MediaContainer>`))
 			case "/api/servers/machine-1":
 				w.Header().Set("Content-Type", "application/xml")
 				_, _ = w.Write([]byte(`<MediaContainer><Server><Section id="7" key="1" title="Movies"/><Section id="8" key="2" title="TV"/></Server></MediaContainer>`))
@@ -389,6 +470,11 @@ func TestSharingRemoveRequiresConfirmationAndDryRunMakesNoRequest(t *testing.T) 
 func TestSharingRemoveUsesFreshOwnedResourceAndExactBodylessDelete(t *testing.T) {
 	deleteReached := false
 	server := sharingTestServer(t, `<MediaContainer><Device name="Resolved Server" clientIdentifier="resolved-machine" provides="server" owned="1"/></MediaContainer>`, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/users/" {
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = w.Write([]byte(`<MediaContainer><User username="friend" home="0"><Server id="99" machineIdentifier="resolved-machine" owned="1"/></User></MediaContainer>`))
+			return
+		}
 		if r.Method != http.MethodDelete || r.URL.Path != "/api/servers/resolved-machine/shared_servers/99" {
 			http.NotFound(w, r)
 			return

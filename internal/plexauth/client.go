@@ -515,6 +515,32 @@ func resourceCandidates(resources []Resource) string {
 	return strings.Join(candidates, ", ")
 }
 
+// ValidateExternalOwnedShare proves a selected share is reported exactly once as
+// an owned share of a non-Home user on the selected server.
+func ValidateExternalOwnedShare(users []SharedUser, machineID string, shareID int) error {
+	if machineID == "" || shareID <= 0 {
+		return fmt.Errorf("selected share is not exactly one owned external share on the selected server")
+	}
+
+	var matchedUser SharedUser
+	var matchedShare SharedServer
+	matches := 0
+	for _, user := range users {
+		for _, share := range user.ServerShares {
+			if share.ID != shareID {
+				continue
+			}
+			matches++
+			matchedUser = user
+			matchedShare = share
+		}
+	}
+	if matches != 1 || matchedUser.Home || !matchedShare.Owned || matchedShare.MachineIdentifier != machineID {
+		return fmt.Errorf("selected share is not exactly one owned external share on the selected server")
+	}
+	return nil
+}
+
 // ValidateLibraryIDs confirms each requested Plex.tv sharing-library ID exists
 // on the selected server before a sharing mutation is sent.
 func ValidateLibraryIDs(libraries []LibrarySection, requested []string) error {
