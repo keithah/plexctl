@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -126,6 +127,117 @@ func TestSharingLibrariesRejectsUnsafeResourceBeforeLibraryEndpoint(t *testing.T
 			}
 		})
 	}
+}
+
+func TestSharingInvitePreflightAndMutationSafety(t *testing.T) {
+	t.Run("invalid selections make no HTTP request", func(t *testing.T) {
+		requests := 0
+		server := sharingTestServer(t, `<MediaContainer/>`, func(w http.ResponseWriter, r *http.Request) {
+			requests++
+			http.NotFound(w, r)
+		})
+		configureSharingTestAccount(t, "alice", "owned-server", "owned-server", "account-token")
+		useSharingPlexServer(t, server)
+
+		for _, args := range [][]string{
+			{"sharing", "invite", "friend@example.com", "--server", "owned-server"},
+			{"sharing", "invite", "friend@example.com", "--server", "owned-server", "--libraries", ""},
+			{"sharing", "invite", "friend@example.com", "--server", "owned-server", "--libraries", "7", "--all-libraries"},
+		} {
+			if _, err := run(t, args...); err == nil {
+				t.Fatalf("%v: expected preflight error", args)
+			}
+		}
+		if requests != 0 {
+			t.Fatalf("requests=%d, want no request for invalid selections", requests)
+		}
+	})
+
+	t.Run("dry run reports target without HTTP", func(t *testing.T) {
+		requests := 0
+		server := sharingTestServer(t, `<MediaContainer/>`, func(w http.ResponseWriter, r *http.Request) {
+			requests++
+			http.NotFound(w, r)
+		})
+		configureSharingTestAccount(t, "alice", "owned-server", "machine-1", "account-token")
+		useSharingPlexServer(t, server)
+
+		var err error
+		out := captureStdout(t, func() {
+			_, err = run(t, "sharing", "invite", "friend@example.com", "--server", "owned-server", "--libraries", "7,8", "--dry-run")
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out, "friend@example.com") || !strings.Contains(out, "owned-server") || !strings.Contains(out, "7,8") {
+			t.Fatalf("dry-run output=%q, want target, server, and grants", out)
+		}
+		if requests != 0 {
+			t.Fatalf("requests=%d, want dry-run to make no request", requests)
+		}
+	})
+
+	t.Run("all libraries resolves global Plex IDs before one invite", func(t *testing.T) {
+		requests := 0
+		var invite map[string]any
+		server := sharingTestServer(t, `<MediaContainer><Device name="Owned Server" clientIdentifier="machine-1" provides="server" owned="1"/></MediaContainer>`, func(w http.ResponseWriter, r *http.Request) {
+			requests++
+			switch r.URL.Path {
+			case "/api/servers/machine-1":
+				w.Header().Set("Content-Type", "application/xml")
+				_, _ = w.Write([]byte(`<MediaContainer><Server><Section id="7" key="1" title="Movies"/><Section id="8" key="2" title="TV"/></Server></MediaContainer>`))
+			case "/api/servers/machine-1/shared_servers":
+				if r.Method != http.MethodPost {
+					http.Error(w, "unexpected method", http.StatusMethodNotAllowed)
+					return
+				}
+				if err := json.NewDecoder(r.Body).Decode(&invite); err != nil {
+					t.Fatal(err)
+				}
+				w.WriteHeader(http.StatusCreated)
+			default:
+				http.NotFound(w, r)
+			}
+		})
+		configureSharingTestAccount(t, "alice", "owned-server", "machine-1", "account-token")
+		useSharingPlexServer(t, server)
+
+		if _, err := run(t, "sharing", "invite", "friend@example.com", "--server", "owned-server", "--all-libraries"); err != nil {
+			t.Fatal(err)
+		}
+		if requests != 2 { // ServerLibraries then the sole mutation; resource discovery is intercepted separately.
+			t.Fatalf("requests=%d, want library discovery plus one POST", requests)
+		}
+		shared, ok := invite["shared_server"].(map[string]any)
+		if !ok || !reflect.DeepEqual(shared["library_section_ids"], []any{float64(7), float64(8)}) || shared["invited_email"] != "friend@example.com" {
+			t.Fatalf("invite=%#v, want all global sections and target", invite)
+		}
+	})
+
+	t.Run("unknown global library makes no mutation", func(t *testing.T) {
+		postReached := false
+		server := sharingTestServer(t, `<MediaContainer><Device name="Owned Server" clientIdentifier="machine-1" provides="server" owned="1"/></MediaContainer>`, func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/api/servers/machine-1":
+				w.Header().Set("Content-Type", "application/xml")
+				_, _ = w.Write([]byte(`<MediaContainer><Server><Section id="7" key="1" title="Movies"/></Server></MediaContainer>`))
+			case "/api/servers/machine-1/shared_servers":
+				postReached = true
+				http.Error(w, "unexpected mutation", http.StatusInternalServerError)
+			default:
+				http.NotFound(w, r)
+			}
+		})
+		configureSharingTestAccount(t, "alice", "owned-server", "machine-1", "account-token")
+		useSharingPlexServer(t, server)
+
+		if _, err := run(t, "sharing", "invite", "friend@example.com", "--server", "owned-server", "--libraries", "99"); err == nil || !strings.Contains(err.Error(), "unknown Plex.tv library ID") {
+			t.Fatalf("error=%v, want unknown global library error", err)
+		}
+		if postReached {
+			t.Fatal("unknown global library sent a mutation")
+		}
+	})
 }
 
 func TestSharingCommandsAreReadOnly(t *testing.T) {

@@ -1,6 +1,7 @@
 package plexauth
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -97,6 +98,14 @@ type LibrarySection struct {
 	Shared bool   `xml:"shared,attr"`
 	Title  string `xml:"title,attr"`
 	Type   string `xml:"type,attr"`
+}
+
+// InviteRequest is the narrow external sharing request supported by Plex.tv.
+// LibrarySectionIDs are global Plex.tv section IDs, not local PMS keys.
+type InviteRequest struct {
+	MachineIdentifier string
+	InvitedEmail      string
+	LibrarySectionIDs []int
 }
 
 // HTTPError reports a non-success Plex.tv response without retaining its body.
@@ -310,6 +319,65 @@ func (c *Client) ServerLibraries(ctx context.Context, token, machineID string) (
 		return nil, fmt.Errorf("expected one Plex server in library response, got %d", len(payload.Servers))
 	}
 	return payload.Servers[0].Sections, nil
+}
+
+func (c *Client) Invite(ctx context.Context, token string, invite InviteRequest) error {
+	if invite.MachineIdentifier == "" {
+		return fmt.Errorf("invite requires a server machine identifier")
+	}
+	if invite.InvitedEmail == "" {
+		return fmt.Errorf("invite requires an external identifier")
+	}
+	if len(invite.LibrarySectionIDs) == 0 {
+		return fmt.Errorf("invite requires at least one library section ID")
+	}
+	payload := struct {
+		ServerID     string `json:"server_id"`
+		SharedServer struct {
+			LibrarySectionIDs []int  `json:"library_section_ids"`
+			InvitedEmail      string `json:"invited_email"`
+		} `json:"shared_server"`
+		SharingSettings struct {
+			AllowSync         string `json:"allowSync"`
+			AllowCameraUpload string `json:"allowCameraUpload"`
+			AllowChannels     string `json:"allowChannels"`
+			FilterMovies      string `json:"filterMovies"`
+			FilterTelevision  string `json:"filterTelevision"`
+			FilterMusic       string `json:"filterMusic"`
+		} `json:"sharing_settings"`
+	}{ServerID: invite.MachineIdentifier}
+	payload.SharedServer.LibrarySectionIDs = invite.LibrarySectionIDs
+	payload.SharedServer.InvitedEmail = invite.InvitedEmail
+	payload.SharingSettings.AllowSync = "0"
+	payload.SharingSettings.AllowCameraUpload = "0"
+	payload.SharingSettings.AllowChannels = "0"
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("encode Plex invite request: %w", err)
+	}
+	path := "/api/servers/" + url.PathEscape(invite.MachineIdentifier) + "/shared_servers"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Plex-Client-Identifier", c.ClientID)
+	req.Header.Set("X-Plex-Product", c.Product)
+	req.Header.Set("X-Plex-Token", token)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if _, err := readLimited(resp.Body, 1<<20, "Plex invite"); err != nil {
+		return err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &HTTPError{StatusCode: resp.StatusCode, Method: http.MethodPost, Path: path}
+	}
+	return nil
 }
 
 // ResolveOwnedResource resolves an exact resource client identifier or server

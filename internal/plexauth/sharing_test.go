@@ -2,9 +2,11 @@ package plexauth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -200,6 +202,80 @@ func TestValidateLibraryIDsSharing(t *testing.T) {
 		t.Fatal("expected local key to be rejected as an unknown Plex.tv library ID")
 	} else if !strings.Contains(err.Error(), "unknown") || !strings.Contains(err.Error(), "1") {
 		t.Fatalf("error=%q, want unknown requested ID", err)
+	}
+}
+
+func TestSharingInviteSendsVerifiedTypedRequest(t *testing.T) {
+	token := "sharing-token"
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Method != http.MethodPost || r.URL.Path != "/api/servers/machine-1/shared_servers" {
+			http.NotFound(w, r)
+			return
+		}
+		assertPlexHeaders(t, r, token, "application/json")
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type=%q, want application/json", got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		want := map[string]any{
+			"server_id": "machine-1",
+			"shared_server": map[string]any{
+				"library_section_ids": []any{float64(7), float64(8)},
+				"invited_email":       "friend@example.com",
+			},
+			"sharing_settings": map[string]any{
+				"allowSync":         "0",
+				"allowCameraUpload": "0",
+				"allowChannels":     "0",
+				"filterMovies":      "",
+				"filterTelevision":  "",
+				"filterMusic":       "",
+			},
+		}
+		if !reflect.DeepEqual(body, want) {
+			t.Errorf("body=%#v, want %#v", body, want)
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	err := New(server.URL, "plexctl-test", server.Client()).Invite(context.Background(), token, InviteRequest{
+		MachineIdentifier: "machine-1", InvitedEmail: "friend@example.com", LibrarySectionIDs: []int{7, 8},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests=%d, want one", requests)
+	}
+}
+
+func TestSharingInviteReturnsConflictStatusWithoutRetry(t *testing.T) {
+	for _, status := range []int{http.StatusConflict, http.StatusUnprocessableEntity} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			requests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				w.WriteHeader(status)
+			}))
+			defer server.Close()
+
+			err := New(server.URL, "plexctl-test", server.Client()).Invite(context.Background(), "sharing-token", InviteRequest{
+				MachineIdentifier: "machine-1", InvitedEmail: "friend@example.com", LibrarySectionIDs: []int{7},
+			})
+			var statusErr *HTTPError
+			if !errors.As(err, &statusErr) || statusErr.StatusCode != status || statusErr.Method != http.MethodPost || statusErr.Path != "/api/servers/machine-1/shared_servers" {
+				t.Fatalf("error=%v, want typed POST status error for %d", err, status)
+			}
+			if requests != 1 {
+				t.Fatalf("requests=%d, want no retry", requests)
+			}
+		})
 	}
 }
 

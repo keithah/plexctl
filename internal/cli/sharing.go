@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/keithah/plexctl/internal/authstore"
 	"github.com/keithah/plexctl/internal/config"
@@ -41,7 +44,7 @@ type sharingUserOutput struct {
 
 func sharingCmd(o *options) *cobra.Command {
 	cmd := &cobra.Command{Use: "sharing", Short: "Inspect Plex library sharing"}
-	cmd.AddCommand(sharingUsersCmd(o), sharingLibrariesCmd(o))
+	cmd.AddCommand(sharingUsersCmd(o), sharingLibrariesCmd(o), sharingInviteCmd(o))
 	return cmd
 }
 
@@ -140,6 +143,138 @@ func sharingLibrariesCmd(o *options) *cobra.Command {
 		}
 		return nil
 	}}
+}
+
+func sharingInviteCmd(o *options) *cobra.Command {
+	var librariesValue string
+	var allLibraries bool
+	var dryRun bool
+	cmd := &cobra.Command{
+		Use:   "invite <email-or-username>",
+		Short: "Invite an external Plex account to selected libraries",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			requested, err := inviteLibrarySelection(cmd, librariesValue, allLibraries)
+			if err != nil {
+				return err
+			}
+			server, profile, err := sharingInviteProfile(o.server)
+			if err != nil {
+				return err
+			}
+			if dryRun {
+				grants := strings.Join(requested, ",")
+				if allLibraries {
+					grants = "all Plex.tv libraries"
+				}
+				fmt.Printf("dry run: invite %s to server %s (%s) with grants %s\n", args[0], server, profile.MachineIdentifier, grants)
+				return nil
+			}
+
+			_, account, token, err := sharingAccountToken(server)
+			if err != nil {
+				return err
+			}
+			selector := profile.MachineIdentifier
+			if selector == "" {
+				selector = server
+			}
+			ctx, cancel := commandContext(o)
+			defer cancel()
+			plex := sharingPlexClient()
+			resources, err := plex.Resources(ctx, token)
+			if err != nil {
+				return fmt.Errorf("refresh Plex resources for %s: %w", account, err)
+			}
+			resource, err := plexauth.ResolveOwnedResource(resources, selector)
+			if err != nil {
+				return err
+			}
+			libraries, err := plex.ServerLibraries(ctx, token, resource.ClientIdentifier)
+			if err != nil {
+				return err
+			}
+			if allLibraries {
+				requested = make([]string, 0, len(libraries))
+				for _, library := range libraries {
+					requested = append(requested, strconv.Itoa(library.ID))
+				}
+			}
+			if err := plexauth.ValidateLibraryIDs(libraries, requested); err != nil {
+				return err
+			}
+			sectionIDs, err := parseInviteLibraryIDs(requested)
+			if err != nil {
+				return err
+			}
+			if err := plex.Invite(ctx, token, plexauth.InviteRequest{MachineIdentifier: resource.ClientIdentifier, InvitedEmail: args[0], LibrarySectionIDs: sectionIDs}); err != nil {
+				var statusErr *plexauth.HTTPError
+				if errors.As(err, &statusErr) && (statusErr.StatusCode == 409 || statusErr.StatusCode == 422) {
+					return fmt.Errorf("invite %q to %q conflicts with an existing or pending share (HTTP %d): %w", args[0], resource.Name, statusErr.StatusCode, err)
+				}
+				return err
+			}
+			fmt.Printf("invited %s to server %s (%s) with grants %s\n", args[0], resource.Name, resource.ClientIdentifier, strings.Join(requested, ","))
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&librariesValue, "libraries", "", "comma-separated global Plex.tv library section IDs")
+	cmd.Flags().BoolVar(&allLibraries, "all-libraries", false, "grant every library currently reported by Plex.tv")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the invitation plan without making a network request")
+	return cmd
+}
+
+func inviteLibrarySelection(cmd *cobra.Command, librariesValue string, allLibraries bool) ([]string, error) {
+	librariesSet := cmd.Flags().Changed("libraries")
+	if librariesSet == allLibraries {
+		return nil, fmt.Errorf("invite requires exactly one of --libraries or --all-libraries")
+	}
+	if allLibraries {
+		return nil, nil
+	}
+	parts := strings.Split(librariesValue, ",")
+	requested := make([]string, 0, len(parts))
+	for _, part := range parts {
+		id := strings.TrimSpace(part)
+		if id == "" {
+			return nil, fmt.Errorf("--libraries must contain at least one non-empty global Plex.tv library section ID")
+		}
+		if _, err := strconv.Atoi(id); err != nil {
+			return nil, fmt.Errorf("invalid Plex.tv library ID %q", id)
+		}
+		requested = append(requested, id)
+	}
+	return requested, nil
+}
+
+func parseInviteLibraryIDs(requested []string) ([]int, error) {
+	ids := make([]int, 0, len(requested))
+	for _, requestedID := range requested {
+		id, err := strconv.Atoi(requestedID)
+		if err != nil || id <= 0 {
+			return nil, fmt.Errorf("invalid Plex.tv library ID %q", requestedID)
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+func sharingInviteProfile(selector string) (string, config.ServerProfile, error) {
+	c, err := config.Load(config.Path())
+	if err != nil {
+		return "", config.ServerProfile{}, err
+	}
+	if selector == "" {
+		selector = c.CurrentServer
+	}
+	if selector == "" {
+		return "", config.ServerProfile{}, fmt.Errorf("sharing invite requires --server or a current configured server")
+	}
+	profile, ok := c.ServersV2[selector]
+	if !ok {
+		return "", config.ServerProfile{}, fmt.Errorf("server %q is not configured", selector)
+	}
+	return selector, profile, nil
 }
 
 func sharingAccountToken(server string) (config.Config, string, string, error) {
