@@ -65,6 +65,41 @@ type User struct {
 	Username string `json:"username"`
 	Email    string `json:"email"`
 }
+
+// SharedUser is an external Plex account that can be invited to or connected
+// through a server share. Email is nil when Plex does not report one.
+type SharedUser struct {
+	ID       int     `json:"id"`
+	Username string  `json:"username"`
+	Email    *string `json:"email"`
+	Invited  bool    `json:"invited"`
+	Friend   bool    `json:"friend"`
+}
+
+// SharedServer is an external account's share on a Plex Media Server.
+type SharedServer struct {
+	ID                int   `json:"id"`
+	UserID            int   `json:"userID"`
+	LibrarySectionIDs []int `json:"librarySectionIDs"`
+	AllLibraries      bool  `json:"allLibraries"`
+	AllowSync         bool  `json:"allowSync"`
+	AllowCameraUpload bool  `json:"allowCameraUpload"`
+	AllowChannels     bool  `json:"allowChannels"`
+	AllowTuners       bool  `json:"allowTuners"`
+	AllowDownloads    bool  `json:"allowDownloads"`
+}
+
+// HTTPError reports a non-success Plex.tv response without retaining its body.
+type HTTPError struct {
+	StatusCode int
+	Method     string
+	Path       string
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("plex request failed: %s %s: HTTP %d", e.Method, e.Path, e.StatusCode)
+}
+
 type Resource struct {
 	Name             string       `json:"name"`
 	ClientIdentifier string       `json:"clientIdentifier"`
@@ -219,6 +254,26 @@ func (c *Client) User(ctx context.Context, token string) (User, error) {
 	err := c.getJSON(ctx, "/api/v2/user", token, &v)
 	return v, err
 }
+
+// SharedUsers lists external Plex accounts and their invitation or friendship state.
+func (c *Client) SharedUsers(ctx context.Context, token string) ([]SharedUser, error) {
+	var users []SharedUser
+	if err := c.getJSON(ctx, "/api/users", token, &users); err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
+// SharedServers lists external server shares for the selected Plex Media Server.
+func (c *Client) SharedServers(ctx context.Context, token, machineID string) ([]SharedServer, error) {
+	var shares []SharedServer
+	path := "/api/servers/" + url.PathEscape(machineID) + "/shared_servers"
+	if err := c.getJSON(ctx, path, token, &shares); err != nil {
+		return nil, err
+	}
+	return shares, nil
+}
+
 func (c *Client) Resources(ctx context.Context, token string) ([]Resource, error) {
 	resources, err := c.legacyResources(ctx, token)
 	if err != nil {
