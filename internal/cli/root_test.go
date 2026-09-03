@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/keithah/plexctl/internal/config"
+	"github.com/keithah/plexctl/internal/connectioncache"
 	"github.com/keithah/plexctl/internal/plexauth"
 )
 
@@ -268,6 +270,113 @@ func TestConfiguredProfileAppliesPersistedInsecureTLS(t *testing.T) {
 	}
 }
 
+func TestResolveCachedServeTargetTreatsUnreadableCacheAsMiss(t *testing.T) {
+	cachePath := filepath.Join(t.TempDir(), "connections.json")
+	if err := os.WriteFile(cachePath, []byte(`not-json`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, ok, err := resolveCachedServeTarget(context.Background(), connectioncache.New(cachePath), "account", config.ServerProfile{MachineIdentifier: "machine"}, "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("unreadable cache was selected")
+	}
+}
+
+func TestCachedServeTokenPrefersServerSpecificCredential(t *testing.T) {
+	t.Setenv("PLEXCTL_TOKEN_SERVER_ACCOUNT_MACHINE", "server-token")
+	got, err := cachedServeToken(config.ServerProfile{TokenKey: "server/account/machine"}, "account-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "server-token" {
+		t.Fatalf("token=%q, want server-specific token", got)
+	}
+}
+
+func TestCachedServeTokenFallsBackToAccountCredential(t *testing.T) {
+	got, err := cachedServeToken(config.ServerProfile{}, "account-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "account-token" {
+		t.Fatalf("token=%q, want account token", got)
+	}
+}
+
+func TestResolveCachedServeTargetUsesValidatedEndpointWithoutDiscovery(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/identity" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"MediaContainer":{"machineIdentifier":"machine"}}`))
+	}))
+	defer server.Close()
+
+	cache := connectioncache.New(filepath.Join(t.TempDir(), "connections.json"))
+	if err := cache.Put("account", "machine", plexauth.Connection{URI: server.URL, Local: true}); err != nil {
+		t.Fatal(err)
+	}
+	client, ok, err := resolveCachedServeTarget(context.Background(), cache, "account", config.ServerProfile{MachineIdentifier: "machine"}, "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("valid cached endpoint was not selected")
+	}
+	identity, err := client.Identity(context.Background())
+	if err != nil || identity.MediaContainer.MachineIdentifier != "machine" {
+		t.Fatalf("identity=%+v err=%v", identity, err)
+	}
+}
+
+func TestResolveCachedServeTargetSeedsCacheFromValidatedProfileURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"MediaContainer":{"machineIdentifier":"machine"}}`))
+	}))
+	defer server.Close()
+
+	cache := connectioncache.New(filepath.Join(t.TempDir(), "connections.json"))
+	profile := config.ServerProfile{MachineIdentifier: "machine", URL: server.URL, Local: true}
+	client, ok, err := resolveCachedServeTarget(context.Background(), cache, "account", profile, "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("validated persisted profile URL was not selected")
+	}
+	if _, err := client.Identity(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	connection, found, err := cache.Get("account", "machine")
+	if err != nil || !found || connection.URI != server.URL {
+		t.Fatalf("cache.Get = %+v, %t, %v; want %q, true, nil", connection, found, err, server.URL)
+	}
+}
+
+func TestResolveCachedServeTargetFallsBackWhenIdentityNoLongerMatches(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"MediaContainer":{"machineIdentifier":"other"}}`))
+	}))
+	defer server.Close()
+
+	cache := connectioncache.New(filepath.Join(t.TempDir(), "connections.json"))
+	if err := cache.Put("account", "machine", plexauth.Connection{URI: server.URL, Local: true}); err != nil {
+		t.Fatal(err)
+	}
+	_, ok, err := resolveCachedServeTarget(context.Background(), cache, "account", config.ServerProfile{MachineIdentifier: "machine"}, "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("cache selected an endpoint with the wrong machine identifier")
+	}
+}
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	old := os.Stdout

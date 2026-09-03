@@ -17,6 +17,11 @@ import (
 	"time"
 )
 
+const (
+	resourceJSONFallbackAttempts = 3
+	resourceJSONFallbackBackoff  = time.Second
+)
+
 type Client struct {
 	BaseURL      string
 	ClientID     string
@@ -212,10 +217,22 @@ func (c *Client) Resources(ctx context.Context, token string) ([]Resource, error
 		return onlyServers(resources), nil
 	}
 	var v []Resource
-	if err := c.getJSON(ctx, "/api/v2/resources", token, &v); err != nil {
-		return nil, err
+	var fallbackErr error
+	for attempt := 0; attempt < resourceJSONFallbackAttempts; attempt++ {
+		fallbackErr = c.getJSON(ctx, "/api/v2/resources?includeHttps=1&includeRelay=1", token, &v)
+		if fallbackErr == nil {
+			return onlyServers(v), nil
+		}
+		if attempt+1 == resourceJSONFallbackAttempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(resourceJSONFallbackBackoff):
+		}
 	}
-	return onlyServers(v), nil
+	return nil, fallbackErr
 }
 
 func (c *Client) warn(msg string) {

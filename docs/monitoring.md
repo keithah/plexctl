@@ -45,12 +45,16 @@ The handler should:
 
 1. Resolve the named account and server from the persisted configuration.
 2. Resolve credentials only at runtime from the OS credential store.
-3. Use the already-selected, validated connection URL; never select a private
-   or stale discovered URL blindly.
-4. Run the bounded deep health check.
-5. Return a small, safe JSON response with the server name, stage,
+3. Validate that server's durable, token-free cached endpoint against its stable
+   machine identifier. A successful cache validation skips Plex.tv entirely.
+   On a cold cache, validate the persisted profile URL before treating it as a
+   cache seed; never use it blindly.
+4. On cache and profile validation failure, discover current Plex.tv candidates,
+   validate them, and atomically replace the cache only after one matches.
+5. Run the bounded deep health check.
+6. Return a small, safe JSON response with the server name, stage,
    classification, duration, and redacted detail.
-6. Return HTTP 200 only for a healthy result. Return HTTP 503 for an unhealthy
+7. Return HTTP 200 only for a healthy result. Return HTTP 503 for an unhealthy
    result, with 401/403, timeout, identity, and library classifications retained
    in the body for diagnosis.
 

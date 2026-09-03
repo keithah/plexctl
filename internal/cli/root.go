@@ -10,6 +10,7 @@ import (
 	"github.com/keithah/plexctl/internal/api"
 	"github.com/keithah/plexctl/internal/authstore"
 	"github.com/keithah/plexctl/internal/config"
+	"github.com/keithah/plexctl/internal/connectioncache"
 	"github.com/keithah/plexctl/internal/health"
 	"github.com/keithah/plexctl/internal/monitor"
 	"github.com/keithah/plexctl/internal/plexauth"
@@ -865,14 +866,15 @@ func healthCmd(o *options) *cobra.Command {
 	return cmd
 }
 
-const plexResourceCacheTTL = 30 * time.Second
+const plexResourceCacheTTL = 10 * time.Minute
 
 func serveCmd(o *options) *cobra.Command {
 	var listen string
 	resources := plexauth.NewResourceCache()
+	connections := connectioncache.New(connectioncache.Path())
 	cmd := &cobra.Command{Use: "serve", Short: "Serve HTTP health endpoints for Uptime Kuma", RunE: func(*cobra.Command, []string) error {
 		h := monitor.Handler{Timeout: o.timeout, Resolve: func(account, server string) (*pms.Client, error) {
-			return resolveServeTargetCached(o, account, server, resources)
+			return resolveServeTargetCached(o, account, server, resources, connections)
 		}}
 		s := &http.Server{Addr: listen, Handler: h}
 		fmt.Fprintf(os.Stderr, "plexctl monitoring adapter listening on %s\n", listen)
@@ -883,10 +885,10 @@ func serveCmd(o *options) *cobra.Command {
 }
 
 func resolveServeTarget(o *options, account, server string) (*pms.Client, error) {
-	return resolveServeTargetCached(o, account, server, nil)
+	return resolveServeTargetCached(o, account, server, nil, nil)
 }
 
-func resolveServeTargetCached(o *options, account, server string, resources *plexauth.ResourceCache) (*pms.Client, error) {
+func resolveServeTargetCached(o *options, account, server string, resources *plexauth.ResourceCache, connections *connectioncache.Store) (*pms.Client, error) {
 	c, err := config.Load(config.Path())
 	if err != nil {
 		return nil, err
@@ -922,12 +924,63 @@ func resolveServeTargetCached(o *options, account, server string, resources *ple
 		}
 		profile = c.ServersV2[candidates[0]]
 	}
-	return resolveFreshServeTarget(o, c, account, server, profile, resources)
+	return resolveFreshServeTarget(o, c, account, server, profile, resources, connections)
 }
 
-// resolveFreshServeTarget makes Plex.tv the runtime source of truth for PMS
-// connections. Persisted profile URLs are never used as a fallback.
-func resolveFreshServeTarget(o *options, c config.Config, account, requested string, profile config.ServerProfile, resourceCache *plexauth.ResourceCache) (*pms.Client, error) {
+func cachedServeToken(profile config.ServerProfile, accountToken string) (string, error) {
+	if profile.TokenKey == "" {
+		return accountToken, nil
+	}
+	if token, err := authstore.Get(profile.TokenKey); err == nil && token != "" {
+		return token, nil
+	}
+	return accountToken, nil
+}
+
+func resolveCachedServeTarget(ctx context.Context, connections *connectioncache.Store, account string, profile config.ServerProfile, accountToken string) (*pms.Client, bool, error) {
+	if profile.MachineIdentifier == "" {
+		return nil, false, nil
+	}
+	token, err := cachedServeToken(profile, accountToken)
+	if err != nil {
+		return nil, false, err
+	}
+	var candidates []plexauth.Connection
+	if connections != nil {
+		connection, ok, err := connections.Get(account, profile.MachineIdentifier)
+		if err == nil && ok {
+			candidates = append(candidates, connection)
+		}
+	}
+	if profile.URL != "" {
+		candidates = append(candidates, plexauth.Connection{URI: profile.URL, Local: profile.Local, Relay: profile.Relay})
+	}
+	for _, candidate := range candidates {
+		validated, err := validatedConnection(ctx, plexauth.Resource{
+			ClientIdentifier: profile.MachineIdentifier,
+			Connections:      []plexauth.Connection{candidate},
+		}, token)
+		if err != nil {
+			continue
+		}
+		normalized := normalizeDiscoveredConnection(validated)
+		client, err := newPMSClient(config.Server{URL: normalized.URL, InsecureTLS: normalized.InsecureTLS}, token)
+		if err != nil {
+			return nil, false, err
+		}
+		if connections != nil {
+			_ = connections.Put(account, profile.MachineIdentifier, validated)
+		}
+		return client, true, nil
+	}
+	return nil, false, nil
+}
+
+// resolveFreshServeTarget uses a previously validated endpoint whenever it is
+// still the expected PMS. Plex.tv discovery occurs only after a cache miss or
+// an endpoint validation failure, and a fresh discovery is persisted only once
+// the advertised connection has passed the same identity check.
+func resolveFreshServeTarget(o *options, c config.Config, account, requested string, profile config.ServerProfile, resourceCache *plexauth.ResourceCache, connections *connectioncache.Store) (*pms.Client, error) {
 	a, ok := c.Accounts[account]
 	if !ok {
 		return nil, fmt.Errorf("account %q is not configured", account)
@@ -938,6 +991,11 @@ func resolveFreshServeTarget(o *options, c config.Config, account, requested str
 	}
 	ctx, cancel := commandContext(o)
 	defer cancel()
+	if cached, ok, err := resolveCachedServeTarget(ctx, connections, account, profile, accountToken); err != nil {
+		return nil, fmt.Errorf("read cached connection for %s/%s: %w", account, requested, err)
+	} else if ok {
+		return cached, nil
+	}
 	plex := plexauth.New("https://plex.tv", "plexctl", nil)
 	resources, err := resourceCache.Resources(ctx, plex, accountToken, plexResourceCacheTTL)
 	if err != nil {
@@ -962,6 +1020,11 @@ func resolveFreshServeTarget(o *options, c config.Config, account, requested str
 		return nil, fmt.Errorf("refresh connection for %s/%s: %w", account, requested, err)
 	}
 	normalized := normalizeDiscoveredConnection(connection)
+	if connections != nil && profile.MachineIdentifier != "" {
+		// The cache is an availability optimization. A successful live probe must
+		// remain usable even if its optional persistence layer is unavailable.
+		_ = connections.Put(account, profile.MachineIdentifier, connection)
+	}
 	token := matches[0].AccessToken
 	if token == "" {
 		token = accountToken
