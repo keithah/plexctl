@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,6 +22,18 @@ const (
 	resourceJSONFallbackAttempts = 3
 	resourceJSONFallbackBackoff  = time.Second
 )
+
+type httpStatusError struct{ code int }
+
+func (e httpStatusError) Error() string { return fmt.Sprintf("plex request failed: HTTP %d", e.code) }
+
+func retryableResourceDiscoveryError(err error) bool {
+	var status httpStatusError
+	if !errors.As(err, &status) {
+		return false
+	}
+	return status.code == http.StatusNotFound || status.code == http.StatusTooManyRequests || status.code >= 500
+}
 
 type Client struct {
 	BaseURL      string
@@ -223,7 +236,7 @@ func (c *Client) Resources(ctx context.Context, token string) ([]Resource, error
 		if fallbackErr == nil {
 			return onlyServers(v), nil
 		}
-		if attempt+1 == resourceJSONFallbackAttempts {
+		if !retryableResourceDiscoveryError(fallbackErr) || attempt+1 == resourceJSONFallbackAttempts {
 			break
 		}
 		select {
@@ -328,7 +341,7 @@ func (c *Client) getJSON(ctx context.Context, path, token string, out any) error
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("plex request failed: HTTP %d", resp.StatusCode)
+		return httpStatusError{code: resp.StatusCode}
 	}
 	if err := json.Unmarshal(data, out); err != nil {
 		return fmt.Errorf("decode Plex response: %w", err)

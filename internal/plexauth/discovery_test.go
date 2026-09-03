@@ -159,6 +159,25 @@ func TestResourcesRetriesTransientJSONFallbackFailure(t *testing.T) {
 	}
 }
 
+func TestResourcesDoesNotRetryAuthenticationFailure(t *testing.T) {
+	var jsonCalls int
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/resources" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		jsonCalls++
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer s.Close()
+
+	_, err := New(s.URL, "test", &http.Client{}).Resources(context.Background(), "token")
+	if err == nil || jsonCalls != 1 {
+		t.Fatalf("err=%v jsonCalls=%d, want immediate authentication failure", err, jsonCalls)
+	}
+}
+
+// A Plex account also returns players and controllers. Those have no PMS API,
 // so discovery must not treat them as servers.
 func TestResourcesSkipNonServerDevices(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
