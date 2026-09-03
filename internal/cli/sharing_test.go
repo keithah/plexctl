@@ -240,6 +240,118 @@ func TestSharingInvitePreflightAndMutationSafety(t *testing.T) {
 	})
 }
 
+func TestSharingUpdatePreflightAndReplacementSafety(t *testing.T) {
+	t.Run("requires explicit server selector", func(t *testing.T) {
+		requests := 0
+		server := sharingTestServer(t, `<MediaContainer/>`, func(w http.ResponseWriter, r *http.Request) {
+			requests++
+			http.NotFound(w, r)
+		})
+		configureSharingTestAccount(t, "alice", "owned-server", "machine-1", "account-token")
+		useSharingPlexServer(t, server)
+
+		if _, err := run(t, "sharing", "update", "99", "--libraries", "7"); err == nil || !strings.Contains(err.Error(), "requires --server") {
+			t.Fatalf("error=%v, want explicit --server requirement", err)
+		}
+		if requests != 0 {
+			t.Fatalf("requests=%d, want selector preflight to make no requests", requests)
+		}
+	})
+
+	t.Run("dry run names replacement target without HTTP", func(t *testing.T) {
+		requests := 0
+		server := sharingTestServer(t, `<MediaContainer/>`, func(w http.ResponseWriter, r *http.Request) {
+			requests++
+			http.NotFound(w, r)
+		})
+		configureSharingTestAccount(t, "alice", "owned-server", "machine-1", "account-token")
+		useSharingPlexServer(t, server)
+
+		var err error
+		out := captureStdout(t, func() {
+			_, err = run(t, "sharing", "update", "99", "--server", "owned-server", "--libraries", "7,8", "--dry-run")
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{"REPLACE", "99", "owned-server", "machine-1", "7,8"} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("dry-run output=%q, want %q", out, want)
+			}
+		}
+		if requests != 0 {
+			t.Fatalf("requests=%d, want dry-run to make no requests", requests)
+		}
+	})
+
+	t.Run("all libraries replaces grants with global IDs", func(t *testing.T) {
+		putReached := false
+		server := sharingTestServer(t, `<MediaContainer><Device name="Owned Server" clientIdentifier="machine-1" provides="server" owned="1"/></MediaContainer>`, func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/api/servers/machine-1":
+				w.Header().Set("Content-Type", "application/xml")
+				_, _ = w.Write([]byte(`<MediaContainer><Server><Section id="7" key="1" title="Movies"/><Section id="8" key="2" title="TV"/></Server></MediaContainer>`))
+			case "/api/servers/machine-1/shared_servers/99":
+				putReached = true
+				if r.Method != http.MethodPut {
+					http.Error(w, "unexpected method", http.StatusMethodNotAllowed)
+					return
+				}
+				var update map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+					t.Fatal(err)
+				}
+				want := map[string]any{"server_id": "machine-1", "shared_server": map[string]any{"library_section_ids": []any{float64(7), float64(8)}}}
+				if !reflect.DeepEqual(update, want) {
+					t.Errorf("update=%#v, want %#v", update, want)
+				}
+				w.WriteHeader(http.StatusNoContent)
+			default:
+				http.NotFound(w, r)
+			}
+		})
+		configureSharingTestAccount(t, "alice", "owned-server", "machine-1", "account-token")
+		useSharingPlexServer(t, server)
+
+		if _, err := run(t, "sharing", "update", "99", "--server", "owned-server", "--all-libraries"); err != nil {
+			t.Fatal(err)
+		}
+		if !putReached {
+			t.Fatal("expected exactly one replacement PUT")
+		}
+	})
+
+	t.Run("invalid share and unknown library send no PUT", func(t *testing.T) {
+		putReached := false
+		server := sharingTestServer(t, `<MediaContainer><Device name="Owned Server" clientIdentifier="machine-1" provides="server" owned="1"/></MediaContainer>`, func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/api/servers/machine-1":
+				w.Header().Set("Content-Type", "application/xml")
+				_, _ = w.Write([]byte(`<MediaContainer><Server><Section id="7" key="1" title="Movies"/></Server></MediaContainer>`))
+			case "/api/servers/machine-1/shared_servers/99":
+				putReached = true
+				http.Error(w, "unexpected mutation", http.StatusInternalServerError)
+			default:
+				http.NotFound(w, r)
+			}
+		})
+		configureSharingTestAccount(t, "alice", "owned-server", "machine-1", "account-token")
+		useSharingPlexServer(t, server)
+
+		for _, args := range [][]string{
+			{"sharing", "update", "0", "--server", "owned-server", "--libraries", "7"},
+			{"sharing", "update", "99", "--server", "owned-server", "--libraries", "99"},
+		} {
+			if _, err := run(t, args...); err == nil {
+				t.Fatalf("%v: expected preflight error", args)
+			}
+		}
+		if putReached {
+			t.Fatal("invalid or unknown library update sent a PUT")
+		}
+	})
+}
+
 func TestSharingCommandsAreReadOnly(t *testing.T) {
 	root := NewRoot()
 	for _, path := range [][]string{{"sharing", "users"}, {"sharing", "libraries"}} {

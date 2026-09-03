@@ -255,6 +255,76 @@ func TestSharingInviteSendsVerifiedTypedRequest(t *testing.T) {
 	}
 }
 
+func TestSharingUpdateReplacesOnlyRequestedLibraries(t *testing.T) {
+	token := "sharing-token"
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Method != http.MethodPut || r.URL.Path != "/api/servers/machine-1/shared_servers/99" {
+			http.NotFound(w, r)
+			return
+		}
+		assertPlexHeaders(t, r, token, "application/json")
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type=%q, want application/json", got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		want := map[string]any{
+			"server_id": "machine-1",
+			"shared_server": map[string]any{
+				"library_section_ids": []any{float64(7), float64(8)},
+			},
+		}
+		if !reflect.DeepEqual(body, want) {
+			t.Errorf("body=%#v, want full replacement payload %#v", body, want)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	err := New(server.URL, "plexctl-test", server.Client()).UpdateShare(context.Background(), token, "machine-1", 99, []int{7, 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests=%d, want exactly one PUT without grant fetch or retry", requests)
+	}
+}
+
+func TestSharingUpdateRejectsInvalidInputWithoutRequest(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		http.Error(w, "unexpected request", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	client := New(server.URL, "plexctl-test", server.Client())
+
+	for _, tc := range []struct {
+		name    string
+		machine string
+		shareID int
+		ids     []int
+	}{
+		{name: "empty machine", shareID: 99, ids: []int{7}},
+		{name: "nonpositive share", machine: "machine-1", shareID: 0, ids: []int{7}},
+		{name: "empty grants", machine: "machine-1", shareID: 99},
+		{name: "nonpositive grant", machine: "machine-1", shareID: 99, ids: []int{0}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := client.UpdateShare(context.Background(), "sharing-token", tc.machine, tc.shareID, tc.ids); err == nil {
+				t.Fatal("expected validation error")
+			}
+		})
+	}
+	if requests != 0 {
+		t.Fatalf("requests=%d, want no request for invalid update", requests)
+	}
+}
+
 func TestSharingInviteReturnsConflictStatusWithoutRetry(t *testing.T) {
 	for _, status := range []int{http.StatusConflict, http.StatusUnprocessableEntity} {
 		t.Run(http.StatusText(status), func(t *testing.T) {

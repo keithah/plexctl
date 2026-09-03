@@ -44,7 +44,7 @@ type sharingUserOutput struct {
 
 func sharingCmd(o *options) *cobra.Command {
 	cmd := &cobra.Command{Use: "sharing", Short: "Inspect Plex library sharing"}
-	cmd.AddCommand(sharingUsersCmd(o), sharingLibrariesCmd(o), sharingInviteCmd(o))
+	cmd.AddCommand(sharingUsersCmd(o), sharingLibrariesCmd(o), sharingInviteCmd(o), sharingUpdateCmd(o))
 	return cmd
 }
 
@@ -146,6 +146,88 @@ func sharingLibrariesCmd(o *options) *cobra.Command {
 		}
 		return nil
 	}}
+}
+
+func sharingUpdateCmd(o *options) *cobra.Command {
+	var librariesValue string
+	var allLibraries bool
+	var dryRun bool
+	cmd := &cobra.Command{
+		Use:   "update <share-id>",
+		Short: "Replace an external Plex share's library grants",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			shareID, err := strconv.Atoi(args[0])
+			if err != nil || shareID <= 0 {
+				return fmt.Errorf("share ID must be a positive integer, got %q", args[0])
+			}
+			requested, err := inviteLibrarySelection(cmd, librariesValue, allLibraries)
+			if err != nil {
+				return fmt.Errorf("update %w", err)
+			}
+			if o.server == "" {
+				return fmt.Errorf("sharing update requires --server")
+			}
+			server, profile, err := sharingInviteProfile(o.server)
+			if err != nil {
+				return err
+			}
+			if dryRun {
+				grants := strings.Join(requested, ",")
+				if allLibraries {
+					grants = "all current Plex.tv libraries"
+				}
+				fmt.Printf("dry run: REPLACE grants for share %d on server %s (%s) with %s\n", shareID, server, profile.MachineIdentifier, grants)
+				return nil
+			}
+
+			_, account, token, err := sharingAccountToken(server)
+			if err != nil {
+				return err
+			}
+			selector := profile.MachineIdentifier
+			if selector == "" {
+				selector = server
+			}
+			ctx, cancel := commandContext(o)
+			defer cancel()
+			plex := sharingPlexClient()
+			resources, err := plex.Resources(ctx, token)
+			if err != nil {
+				return fmt.Errorf("refresh Plex resources for %s: %w", account, err)
+			}
+			resource, err := plexauth.ResolveOwnedResource(resources, selector)
+			if err != nil {
+				return err
+			}
+			libraries, err := plex.ServerLibraries(ctx, token, resource.ClientIdentifier)
+			if err != nil {
+				return err
+			}
+			if allLibraries {
+				requested = make([]string, 0, len(libraries))
+				for _, library := range libraries {
+					requested = append(requested, strconv.Itoa(library.ID))
+				}
+			}
+			if err := plexauth.ValidateLibraryIDs(libraries, requested); err != nil {
+				return err
+			}
+			sectionIDs, err := parseInviteLibraryIDs(requested)
+			if err != nil {
+				return err
+			}
+			if err := plex.UpdateShare(ctx, token, resource.ClientIdentifier, shareID, sectionIDs); err != nil {
+				return err
+			}
+			fmt.Printf("REPLACED grants for share %d on server %s (%s) with %s\n", shareID, resource.Name, resource.ClientIdentifier, strings.Join(requested, ","))
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&librariesValue, "libraries", "", "comma-separated global Plex.tv library section IDs")
+	cmd.Flags().BoolVar(&allLibraries, "all-libraries", false, "replace grants with every library currently reported by Plex.tv")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the full replacement plan without making network requests")
+	return cmd
 }
 
 func sharingInviteCmd(o *options) *cobra.Command {

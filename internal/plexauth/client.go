@@ -380,6 +380,59 @@ func (c *Client) Invite(ctx context.Context, token string, invite InviteRequest)
 	return nil
 }
 
+// UpdateShare replaces the complete library grant set for one exact external
+// Plex share. Library section IDs are global Plex.tv IDs, not local PMS keys.
+// It does not fetch or merge the prior grant set.
+func (c *Client) UpdateShare(ctx context.Context, token, machineID string, shareID int, librarySectionIDs []int) error {
+	if machineID == "" {
+		return fmt.Errorf("share update requires a server machine identifier")
+	}
+	if shareID <= 0 {
+		return fmt.Errorf("share update requires a positive share ID")
+	}
+	if len(librarySectionIDs) == 0 {
+		return fmt.Errorf("share update requires at least one library section ID")
+	}
+	for _, id := range librarySectionIDs {
+		if id <= 0 {
+			return fmt.Errorf("share update requires positive library section IDs")
+		}
+	}
+	payload := struct {
+		ServerID     string `json:"server_id"`
+		SharedServer struct {
+			LibrarySectionIDs []int `json:"library_section_ids"`
+		} `json:"shared_server"`
+	}{ServerID: machineID}
+	payload.SharedServer.LibrarySectionIDs = librarySectionIDs
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("encode Plex share update request: %w", err)
+	}
+	path := "/api/servers/" + url.PathEscape(machineID) + "/shared_servers/" + strconv.Itoa(shareID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.BaseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Plex-Client-Identifier", c.ClientID)
+	req.Header.Set("X-Plex-Product", c.Product)
+	req.Header.Set("X-Plex-Token", token)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if _, err := readLimited(resp.Body, 1<<20, "Plex share update"); err != nil {
+		return err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &HTTPError{StatusCode: resp.StatusCode, Method: http.MethodPut, Path: path}
+	}
+	return nil
+}
+
 // ResolveOwnedResource resolves an exact resource client identifier or server
 // name and ensures that the selected resource belongs to the current account.
 func ResolveOwnedResource(resources []Resource, selector string) (Resource, error) {
