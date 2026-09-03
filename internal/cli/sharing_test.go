@@ -19,7 +19,7 @@ func TestSharingUsersJSONShowsNestedShareStateAndGrants(t *testing.T) {
 		switch r.URL.Path {
 		case "/api/users/":
 			w.Header().Set("Content-Type", "application/xml")
-			_, _ = w.Write([]byte(`<MediaContainer><User username="home-user" home="1"><Server id="1" serverId="1" machineIdentifier="owned-server" name="Owned Server"/></User><User username="friend" email="friend@example.com"><Server id="98" serverId="122" machineIdentifier="foreign-server" name="Foreign Server" allLibraries="0" pending="0" owned="0"/><Server id="99" serverId="123" machineIdentifier="owned-server" name="Owned Server" allLibraries="0" pending="1" owned="1"/></User></MediaContainer>`))
+			_, _ = w.Write([]byte(`<MediaContainer><User username="home-user" home="1"><Server id="1" serverId="1" machineIdentifier="owned-server" name="Owned Server"/></User><User username="friend" email="friend@example.com"><Server id="97" serverId="121" machineIdentifier="stale-server" name="Stale Server" allLibraries="0" pending="0" owned="1"/><Server id="98" serverId="122" machineIdentifier="foreign-server" name="Foreign Server" allLibraries="0" pending="0" owned="0"/><Server id="99" serverId="123" machineIdentifier="owned-server" name="Owned Server" allLibraries="0" pending="1" owned="1"/></User></MediaContainer>`))
 		case "/api/servers/owned-server/shared_servers/99":
 			w.Header().Set("Content-Type", "application/xml")
 			_, _ = w.Write([]byte(`<SharedServer><Section id="7" key="1" shared="1" title="Movies" type="movie"/></SharedServer>`))

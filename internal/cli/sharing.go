@@ -77,7 +77,10 @@ func sharingUsersCmd(o *options) *cobra.Command {
 				}
 				resource, err := plexauth.ResolveOwnedResource(resources, share.MachineIdentifier)
 				if err != nil {
-					return fmt.Errorf("resolve share %d for %s: %w", share.ID, user.Username, err)
+					// Plex can retain a stale share after the corresponding server is no
+					// longer advertised to this account. It cannot safely be queried for
+					// grants, so omit it rather than failing the complete read-only list.
+					continue
 				}
 				grants, err := plex.SharedServerSections(ctx, token, resource.ClientIdentifier, share.ID)
 				if err != nil {
