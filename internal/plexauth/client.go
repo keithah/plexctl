@@ -89,8 +89,8 @@ type SharedServer struct {
 	Owned             bool   `xml:"owned,attr"`
 }
 
-// LibrarySection is a Plex library section reported by a shared-server detail
-// response. Key is the library ID accepted by Plex sharing mutations.
+// LibrarySection is a Plex library section reported by Plex.tv. ID is the
+// Plex.tv sharing-library ID; Key is the separate, local PMS section key.
 type LibrarySection struct {
 	ID     int    `xml:"id,attr"`
 	Key    int    `xml:"key,attr"`
@@ -290,6 +290,77 @@ func (c *Client) SharedServerSections(ctx context.Context, token, machineID stri
 		return nil, err
 	}
 	return payload.Sections, nil
+}
+
+// ServerLibraries lists selectable Plex.tv sharing-library sections for one
+// selected server resource. This intentionally uses Plex.tv rather than a PMS
+// connection, because the Section IDs are global sharing IDs.
+func (c *Client) ServerLibraries(ctx context.Context, token, machineID string) ([]LibrarySection, error) {
+	var payload struct {
+		XMLName xml.Name `xml:"MediaContainer"`
+		Servers []struct {
+			Sections []LibrarySection `xml:"Section"`
+		} `xml:"Server"`
+	}
+	path := "/api/servers/" + url.PathEscape(machineID)
+	if err := c.getXML(ctx, path, token, &payload); err != nil {
+		return nil, err
+	}
+	if len(payload.Servers) != 1 {
+		return nil, fmt.Errorf("expected one Plex server in library response, got %d", len(payload.Servers))
+	}
+	return payload.Servers[0].Sections, nil
+}
+
+// ResolveOwnedResource resolves an exact resource client identifier or server
+// name and ensures that the selected resource belongs to the current account.
+func ResolveOwnedResource(resources []Resource, selector string) (Resource, error) {
+	var matches []Resource
+	for _, resource := range resources {
+		if resource.ClientIdentifier == selector {
+			matches = append(matches, resource)
+		}
+	}
+	if len(matches) == 0 {
+		for _, resource := range resources {
+			if resource.Name == selector {
+				matches = append(matches, resource)
+			}
+		}
+	}
+	if len(matches) == 0 {
+		return Resource{}, fmt.Errorf("no Plex server matches %q", selector)
+	}
+	if len(matches) > 1 {
+		return Resource{}, fmt.Errorf("ambiguous Plex server %q; candidates: %s", selector, resourceCandidates(matches))
+	}
+	if !matches[0].Owned {
+		return Resource{}, fmt.Errorf("Plex server %q (%s) is not owned by the authenticated account", matches[0].Name, matches[0].ClientIdentifier)
+	}
+	return matches[0], nil
+}
+
+func resourceCandidates(resources []Resource) string {
+	candidates := make([]string, 0, len(resources))
+	for _, resource := range resources {
+		candidates = append(candidates, fmt.Sprintf("%q (%s)", resource.Name, resource.ClientIdentifier))
+	}
+	return strings.Join(candidates, ", ")
+}
+
+// ValidateLibraryIDs confirms each requested Plex.tv sharing-library ID exists
+// on the selected server before a sharing mutation is sent.
+func ValidateLibraryIDs(libraries []LibrarySection, requested []string) error {
+	known := make(map[string]struct{}, len(libraries))
+	for _, library := range libraries {
+		known[strconv.Itoa(library.ID)] = struct{}{}
+	}
+	for _, id := range requested {
+		if _, ok := known[id]; !ok {
+			return fmt.Errorf("unknown Plex.tv library ID %q", id)
+		}
+	}
+	return nil
 }
 
 func (c *Client) Resources(ctx context.Context, token string) ([]Resource, error) {

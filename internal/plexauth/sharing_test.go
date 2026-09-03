@@ -112,6 +112,97 @@ func TestSharedUsersSharingRejectsMalformedAndOversizedResponses(t *testing.T) {
 	}
 }
 
+func TestResolveOwnedResourceSharing(t *testing.T) {
+	resources := []Resource{
+		{Name: "Living Room", ClientIdentifier: "owned-1", Owned: true},
+		{Name: "Living Room", ClientIdentifier: "owned-2", Owned: true},
+		{Name: "Guest Server", ClientIdentifier: "guest-1", Owned: false},
+	}
+
+	t.Run("exact client identifier resolves an owned resource", func(t *testing.T) {
+		got, err := ResolveOwnedResource(resources, "owned-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.ClientIdentifier != "owned-1" {
+			t.Fatalf("resource=%+v, want owned-1", got)
+		}
+	})
+
+	t.Run("exact unique name resolves an owned resource", func(t *testing.T) {
+		got, err := ResolveOwnedResource(resources, "Guest Server")
+		if err == nil {
+			t.Fatalf("resource=%+v, want non-owned error", got)
+		}
+		if !strings.Contains(err.Error(), "not owned") || !strings.Contains(err.Error(), "guest-1") {
+			t.Fatalf("error=%q, want non-owned resource details", err)
+		}
+
+		got, err = ResolveOwnedResource(append(resources, Resource{Name: "Office", ClientIdentifier: "owned-3", Owned: true}), "Office")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.ClientIdentifier != "owned-3" {
+			t.Fatalf("resource=%+v, want owned-3", got)
+		}
+	})
+
+	t.Run("ambiguous same-name owned resources list safe candidates", func(t *testing.T) {
+		_, err := ResolveOwnedResource(resources, "Living Room")
+		if err == nil {
+			t.Fatal("expected ambiguous resource error")
+		}
+		if !strings.Contains(err.Error(), "ambiguous") || !strings.Contains(err.Error(), "owned-1") || !strings.Contains(err.Error(), "owned-2") {
+			t.Fatalf("error=%q, want ambiguous candidate client identifiers", err)
+		}
+	})
+
+	t.Run("matching non-owned client identifier is rejected", func(t *testing.T) {
+		_, err := ResolveOwnedResource(resources, "guest-1")
+		if err == nil {
+			t.Fatal("expected non-owned resource error")
+		}
+		if !strings.Contains(err.Error(), "not owned") || !strings.Contains(err.Error(), "Guest Server") || !strings.Contains(err.Error(), "guest-1") {
+			t.Fatalf("error=%q, want non-owned resource details", err)
+		}
+	})
+}
+
+func TestServerLibrariesSharing(t *testing.T) {
+	token := "sharing-token"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/servers/machine-1" {
+			http.NotFound(w, r)
+			return
+		}
+		assertPlexHeaders(t, r, token, "application/xml")
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = w.Write([]byte(`<MediaContainer><Server machineIdentifier="machine-1" owned="1"><Section id="7" key="1" title="Movies" type="movie"/><Section id="8" key="2" title="TV" type="show"/></Server></MediaContainer>`))
+	}))
+	defer server.Close()
+
+	sections, err := New(server.URL, "plexctl-test", server.Client()).ServerLibraries(context.Background(), token, "machine-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sections) != 2 || sections[0].ID != 7 || sections[0].Key != 1 || sections[0].Title != "Movies" || sections[1].ID != 8 {
+		t.Fatalf("sections=%+v, want Plex.tv server sections", sections)
+	}
+}
+
+func TestValidateLibraryIDsSharing(t *testing.T) {
+	libraries := []LibrarySection{{ID: 7, Key: 1, Title: "Movies"}, {ID: 8, Key: 2, Title: "TV"}}
+
+	if err := ValidateLibraryIDs(libraries, []string{"7", "8"}); err != nil {
+		t.Fatalf("validate known library IDs: %v", err)
+	}
+	if err := ValidateLibraryIDs(libraries, []string{"1"}); err == nil {
+		t.Fatal("expected local key to be rejected as an unknown Plex.tv library ID")
+	} else if !strings.Contains(err.Error(), "unknown") || !strings.Contains(err.Error(), "1") {
+		t.Fatalf("error=%q, want unknown requested ID", err)
+	}
+}
+
 func assertPlexHeaders(t *testing.T, r *http.Request, token, accept string) {
 	t.Helper()
 	if got := r.Header.Get("Accept"); got != accept {
