@@ -136,6 +136,50 @@ func TestAppendAndList(t *testing.T) {
 	}
 }
 
+func TestPurgeBeforeKeepsRecordsAtAndAfterCutoff(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "sharing-history.db")
+	history := Open(databasePath)
+	ctx := context.Background()
+	cutoff := time.Date(2026, time.September, 4, 12, 0, 0, 0, time.UTC)
+
+	for _, record := range []Record{
+		{RemovedAt: cutoff.Add(-time.Nanosecond), Username: "before-cutoff"},
+		{RemovedAt: cutoff.In(time.FixedZone("PDT", -7*60*60)), Username: "at-cutoff"},
+		{RemovedAt: cutoff.Add(time.Nanosecond), Username: "after-cutoff"},
+	} {
+		if err := history.Append(ctx, record); err != nil {
+			t.Fatalf("append %q: %v", record.Username, err)
+		}
+	}
+
+	count, err := history.CountBefore(ctx, cutoff.In(time.FixedZone("PDT", -7*60*60)))
+	if err != nil {
+		t.Fatalf("count before cutoff: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("CountBefore() = %d, want 1", count)
+	}
+
+	deleted, err := history.PurgeBefore(ctx, cutoff.In(time.FixedZone("PDT", -7*60*60)))
+	if err != nil {
+		t.Fatalf("purge before cutoff: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("PurgeBefore() deleted %d records, want 1", deleted)
+	}
+
+	remaining, err := history.List(ctx)
+	if err != nil {
+		t.Fatalf("list remaining records: %v", err)
+	}
+	if len(remaining) != 2 {
+		t.Fatalf("List() returned %d records after purge, want 2", len(remaining))
+	}
+	if remaining[0].Username != "after-cutoff" || remaining[1].Username != "at-cutoff" {
+		t.Fatalf("remaining users = [%q, %q], want [\"after-cutoff\", \"at-cutoff\"]", remaining[0].Username, remaining[1].Username)
+	}
+}
+
 func TestAppendSecuresExistingHistoryDirectory(t *testing.T) {
 	parentDirectory := filepath.Join(t.TempDir(), "existing-history")
 	if err := os.Mkdir(parentDirectory, 0o755); err != nil {

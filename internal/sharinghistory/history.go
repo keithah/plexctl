@@ -14,6 +14,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+const timestampLayout = "2006-01-02T15:04:05.000000000Z07:00"
+
 const schema = `
 CREATE TABLE IF NOT EXISTS removed_external_shares (
   id INTEGER PRIMARY KEY,
@@ -86,7 +88,7 @@ func (h *History) Append(ctx context.Context, record Record) error {
 		removed_at, plex_user_id, username, email, share_id, server_name,
 		server_client_identifier, all_libraries, pending, library_section_ids
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		record.RemovedAt.UTC().Format(time.RFC3339Nano),
+		formatTimestamp(record.RemovedAt),
 		record.PlexUserID,
 		record.Username,
 		record.Email,
@@ -101,6 +103,46 @@ func (h *History) Append(ctx context.Context, record Record) error {
 		return fmt.Errorf("append removal history: %w", err)
 	}
 	return nil
+}
+
+// CountBefore returns the number of records removed strictly before cutoff.
+func (h *History) CountBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	db, err := h.openDatabase()
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+
+	var count int64
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM removed_external_shares WHERE removed_at < ?`,
+		formatTimestamp(cutoff),
+	).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count removal history before cutoff: %w", err)
+	}
+	return count, nil
+}
+
+// PurgeBefore deletes records removed strictly before cutoff and returns the number deleted.
+func (h *History) PurgeBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	db, err := h.openDatabase()
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+
+	result, err := db.ExecContext(ctx,
+		`DELETE FROM removed_external_shares WHERE removed_at < ?`,
+		formatTimestamp(cutoff),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("purge removal history before cutoff: %w", err)
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count purged removal history: %w", err)
+	}
+	return deleted, nil
 }
 
 // List returns records in deterministic newest-first order.
@@ -192,6 +234,10 @@ func (h *History) openDatabase() (*sql.DB, error) {
 		return nil, fmt.Errorf("initialize removal history database: %w", err)
 	}
 	return db, nil
+}
+
+func formatTimestamp(value time.Time) string {
+	return value.UTC().Format(timestampLayout)
 }
 
 func boolToInt(value bool) int {
