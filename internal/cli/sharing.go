@@ -6,10 +6,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/keithah/plexctl/internal/authstore"
 	"github.com/keithah/plexctl/internal/config"
 	"github.com/keithah/plexctl/internal/plexauth"
+	"github.com/keithah/plexctl/internal/sharinghistory"
 	"github.com/spf13/cobra"
 )
 
@@ -197,11 +199,34 @@ func sharingRemoveCmd(o *options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := plexauth.ValidateExternalOwnedShare(users, resource.ClientIdentifier, shareID); err != nil {
+			matchedUser, matchedShare, err := plexauth.FindExternalOwnedShare(users, resource.ClientIdentifier, shareID)
+			if err != nil {
+				return err
+			}
+			grants, err := plex.SharedServerSections(ctx, token, resource.ClientIdentifier, shareID)
+			if err != nil {
 				return err
 			}
 			if err := plex.RemoveShare(ctx, token, resource.ClientIdentifier, shareID); err != nil {
 				return err
+			}
+			grantIDs := make([]int, 0, len(grants))
+			for _, grant := range grants {
+				grantIDs = append(grantIDs, grant.ID)
+			}
+			if err := sharinghistory.Open(sharinghistory.Path()).Append(ctx, sharinghistory.Record{
+				RemovedAt:              time.Now(),
+				PlexUserID:             int64(matchedUser.ID),
+				Username:               matchedUser.Username,
+				Email:                  matchedUser.Email,
+				ShareID:                int64(matchedShare.ID),
+				ServerName:             resource.Name,
+				ServerClientIdentifier: resource.ClientIdentifier,
+				AllLibraries:           matchedShare.AllLibraries,
+				Pending:                matchedShare.Pending,
+				LibrarySectionIDs:      grantIDs,
+			}); err != nil {
+				return fmt.Errorf("Plex share revocation succeeded but local history recording failed: %w", err)
 			}
 			fmt.Printf("REVOKED share %d on server %s (%s)\n", shareID, resource.Name, resource.ClientIdentifier)
 			return nil

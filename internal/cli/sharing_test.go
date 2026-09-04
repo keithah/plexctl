@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/keithah/plexctl/internal/config"
 	"github.com/keithah/plexctl/internal/plexauth"
+	"github.com/keithah/plexctl/internal/sharinghistory"
 )
 
 func TestSharingUsersJSONShowsNestedShareStateAndGrants(t *testing.T) {
@@ -127,6 +129,11 @@ func TestSharingUnprofiledSelectorsUseCurrentAccountAndFreshOwnedResource(t *tes
 					mutationReached = true
 					w.WriteHeader(http.StatusCreated)
 				case "/api/servers/fresh-machine/shared_servers/99":
+					if tc.operation == "remove" && r.Method == http.MethodGet {
+						w.Header().Set("Content-Type", "application/xml")
+						_, _ = w.Write([]byte(`<SharedServer><Section id="7" key="1" title="Movies"/></SharedServer>`))
+						return
+					}
 					wantMethod := http.MethodPut
 					if tc.operation == "remove" {
 						wantMethod = http.MethodDelete
@@ -344,6 +351,11 @@ func TestSharingMutationsRequireFreshExactExternalShare(t *testing.T) {
 							w.Header().Set("Content-Type", "application/xml")
 							_, _ = w.Write([]byte(`<MediaContainer><Server><Section id="7" key="1" title="Movies"/></Server></MediaContainer>`))
 						case "/api/servers/resolved-machine/shared_servers/" + tc.shareID:
+							if operation == "remove" && r.Method == http.MethodGet {
+								w.Header().Set("Content-Type", "application/xml")
+								_, _ = w.Write([]byte(`<SharedServer><Section id="7" key="1" title="Movies"/></SharedServer>`))
+								return
+							}
 							mutations++
 							if !tc.wantMutate {
 								t.Errorf("unsafe %s for share %s", r.Method, tc.shareID)
@@ -551,12 +563,261 @@ func TestSharingRemoveRequiresConfirmationAndDryRunMakesNoRequest(t *testing.T) 
 	}
 }
 
+func TestSharingRemoveRecordsExternalShareOnlyAfterExactDelete(t *testing.T) {
+	token := "account-token"
+	deletes := 0
+	server := sharingTestServer(t, `<MediaContainer><Device name="Fresh Server" clientIdentifier="fresh-machine" provides="server" owned="1"/></MediaContainer>`, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/users/":
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = w.Write([]byte(`<MediaContainer><User id="42" username="friend" email="friend@example.com" home="0"><Server id="99" serverId="123" machineIdentifier="fresh-machine" name="Stale Server" allLibraries="1" pending="1" owned="1"/></User></MediaContainer>`))
+		case "/api/servers/fresh-machine/shared_servers/99":
+			if r.Method == http.MethodGet {
+				w.Header().Set("Content-Type", "application/xml")
+				_, _ = w.Write([]byte(`<SharedServer><Section id="7" key="1" shared="1" title="Movies" type="movie"/><Section id="8" key="2" shared="1" title="TV" type="show"/></SharedServer>`))
+				return
+			}
+			if r.Method != http.MethodDelete {
+				http.Error(w, "unexpected method", http.StatusMethodNotAllowed)
+				return
+			}
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(body) != 0 {
+				t.Fatalf("DELETE body=%q, want no body", body)
+			}
+			deletes++
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	configureSharingTestAccount(t, "alice", "configured-server", "fresh-machine", token)
+	historyPath := filepath.Join(t.TempDir(), "sharing-history.db")
+	t.Setenv("PLEXCTL_SHARING_HISTORY_DB", historyPath)
+	useSharingPlexServer(t, server)
+
+	var err error
+	out := captureStdout(t, func() {
+		_, err = run(t, "sharing", "remove", "99", "--server", "configured-server", "--yes")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deletes != 1 {
+		t.Fatalf("DELETE requests=%d, want exactly one", deletes)
+	}
+	records, err := sharinghistory.Open(historyPath).List(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records=%+v, want one removal record", records)
+	}
+	record := records[0]
+	if record.PlexUserID != 42 || record.Username != "friend" || record.Email == nil || *record.Email != "friend@example.com" || record.ShareID != 99 || record.ServerName != "Fresh Server" || record.ServerClientIdentifier != "fresh-machine" || !record.AllLibraries || !record.Pending || !reflect.DeepEqual(record.LibrarySectionIDs, []int{7, 8}) {
+		t.Fatalf("record=%+v, want complete external-share snapshot with fresh server details", record)
+	}
+	if strings.Contains(out, token) || strings.Contains(fmt.Sprintf("%+v", record), token) {
+		t.Fatalf("output or history leaked Plex token: output=%q record=%+v", out, record)
+	}
+}
+
+func TestSharingRemoveDoesNotRecordWithoutProvenSuccessfulRevocation(t *testing.T) {
+	t.Run("dry run and invalid input make no request or history record", func(t *testing.T) {
+		requests := 0
+		server := sharingTestServer(t, `<MediaContainer/>`, func(w http.ResponseWriter, r *http.Request) {
+			requests++
+			http.Error(w, "unexpected request", http.StatusInternalServerError)
+		})
+		configureSharingTestAccount(t, "alice", "configured-server", "machine-1", "account-token")
+		historyPath := filepath.Join(t.TempDir(), "sharing-history.db")
+		t.Setenv("PLEXCTL_SHARING_HISTORY_DB", historyPath)
+		useSharingPlexServer(t, server)
+
+		if _, err := run(t, "sharing", "remove", "99", "--server", "configured-server", "--yes", "--dry-run"); err != nil {
+			t.Fatalf("dry-run error=%v", err)
+		}
+		for _, args := range [][]string{
+			{"sharing", "remove", "0", "--server", "configured-server", "--yes"},
+			{"sharing", "remove", "99", "--server", "configured-server"},
+		} {
+			if _, err := run(t, args...); err == nil {
+				t.Fatalf("%v: expected validation or confirmation error", args)
+			}
+		}
+		if requests != 0 {
+			t.Fatalf("requests=%d, want zero", requests)
+		}
+		records, err := sharinghistory.Open(historyPath).List(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(records) != 0 {
+			t.Fatalf("records=%+v, want none", records)
+		}
+	})
+
+	t.Run("Home foreign and ambiguous shares make no grant request DELETE or history record", func(t *testing.T) {
+		for _, tc := range []struct {
+			name    string
+			shareID string
+		}{
+			{name: "Home", shareID: "101"},
+			{name: "foreign", shareID: "102"},
+			{name: "ambiguous", shareID: "103"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				grantOrDelete := 0
+				server := sharingTestServer(t, `<MediaContainer><Device name="Fresh Server" clientIdentifier="fresh-machine" provides="server" owned="1"/></MediaContainer>`, func(w http.ResponseWriter, r *http.Request) {
+					switch r.URL.Path {
+					case "/api/users/":
+						w.Header().Set("Content-Type", "application/xml")
+						_, _ = w.Write([]byte(`<MediaContainer><User username="home" home="1"><Server id="101" machineIdentifier="fresh-machine" owned="1"/></User><User username="foreign" home="0"><Server id="102" machineIdentifier="fresh-machine" owned="0"/><Server id="103" machineIdentifier="fresh-machine" owned="1"/></User><User username="another" home="0"><Server id="103" machineIdentifier="fresh-machine" owned="1"/></User></MediaContainer>`))
+					default:
+						grantOrDelete++
+						http.Error(w, "unsafe request", http.StatusInternalServerError)
+					}
+				})
+				configureSharingTestAccount(t, "alice", "configured-server", "fresh-machine", "account-token")
+				historyPath := filepath.Join(t.TempDir(), "sharing-history.db")
+				t.Setenv("PLEXCTL_SHARING_HISTORY_DB", historyPath)
+				useSharingPlexServer(t, server)
+
+				if _, err := run(t, "sharing", "remove", tc.shareID, "--server", "configured-server", "--yes"); err == nil || !strings.Contains(err.Error(), "external") {
+					t.Fatalf("error=%v, want external-share validation failure", err)
+				}
+				if grantOrDelete != 0 {
+					t.Fatalf("grant or DELETE requests=%d, want zero", grantOrDelete)
+				}
+				records, err := sharinghistory.Open(historyPath).List(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(records) != 0 {
+					t.Fatalf("records=%+v, want none", records)
+				}
+			})
+		}
+	})
+
+	t.Run("grant fetch and DELETE failures leave no history record", func(t *testing.T) {
+		for _, tc := range []struct {
+			name         string
+			grantStatus  int
+			deleteStatus int
+		}{
+			{name: "grant fetch", grantStatus: http.StatusInternalServerError},
+			{name: "DELETE", deleteStatus: http.StatusBadGateway},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				deletes := 0
+				server := sharingTestServer(t, `<MediaContainer><Device name="Fresh Server" clientIdentifier="fresh-machine" provides="server" owned="1"/></MediaContainer>`, func(w http.ResponseWriter, r *http.Request) {
+					switch r.URL.Path {
+					case "/api/users/":
+						w.Header().Set("Content-Type", "application/xml")
+						_, _ = w.Write([]byte(`<MediaContainer><User id="42" username="friend" home="0"><Server id="99" machineIdentifier="fresh-machine" owned="1"/></User></MediaContainer>`))
+					case "/api/servers/fresh-machine/shared_servers/99":
+						if r.Method == http.MethodGet {
+							if tc.grantStatus != 0 {
+								http.Error(w, "grant failure", tc.grantStatus)
+								return
+							}
+							w.Header().Set("Content-Type", "application/xml")
+							_, _ = w.Write([]byte(`<SharedServer><Section id="7"/></SharedServer>`))
+							return
+						}
+						if r.Method == http.MethodDelete {
+							deletes++
+							http.Error(w, "DELETE failure", tc.deleteStatus)
+							return
+						}
+						http.NotFound(w, r)
+					default:
+						http.NotFound(w, r)
+					}
+				})
+				configureSharingTestAccount(t, "alice", "configured-server", "fresh-machine", "account-token")
+				historyPath := filepath.Join(t.TempDir(), "sharing-history.db")
+				t.Setenv("PLEXCTL_SHARING_HISTORY_DB", historyPath)
+				useSharingPlexServer(t, server)
+
+				if _, err := run(t, "sharing", "remove", "99", "--server", "configured-server", "--yes"); err == nil {
+					t.Fatal("expected grant or DELETE failure")
+				}
+				if tc.grantStatus != 0 && deletes != 0 {
+					t.Fatalf("DELETE requests=%d, want zero after grant failure", deletes)
+				}
+				if tc.deleteStatus != 0 && deletes != 1 {
+					t.Fatalf("DELETE requests=%d, want one", deletes)
+				}
+				records, err := sharinghistory.Open(historyPath).List(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(records) != 0 {
+					t.Fatalf("records=%+v, want none", records)
+				}
+			})
+		}
+	})
+}
+
+func TestSharingRemoveReportsPartialSuccessWhenHistoryAppendFails(t *testing.T) {
+	deletes := 0
+	server := sharingTestServer(t, `<MediaContainer><Device name="Fresh Server" clientIdentifier="fresh-machine" provides="server" owned="1"/></MediaContainer>`, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/users/":
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = w.Write([]byte(`<MediaContainer><User id="42" username="friend" home="0"><Server id="99" machineIdentifier="fresh-machine" owned="1"/></User></MediaContainer>`))
+		case "/api/servers/fresh-machine/shared_servers/99":
+			if r.Method == http.MethodGet {
+				w.Header().Set("Content-Type", "application/xml")
+				_, _ = w.Write([]byte(`<SharedServer><Section id="7"/></SharedServer>`))
+				return
+			}
+			if r.Method == http.MethodDelete {
+				deletes++
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	configureSharingTestAccount(t, "alice", "configured-server", "fresh-machine", "account-token")
+	t.Setenv("PLEXCTL_SHARING_HISTORY_DB", t.TempDir()) // A directory cannot be opened as the SQLite history file.
+	useSharingPlexServer(t, server)
+
+	var err error
+	out := captureStdout(t, func() {
+		_, err = run(t, "sharing", "remove", "99", "--server", "configured-server", "--yes")
+	})
+	if err == nil || !strings.Contains(err.Error(), "revocation succeeded but local history recording failed") {
+		t.Fatalf("error=%v, want explicit partial-success error", err)
+	}
+	if deletes != 1 {
+		t.Fatalf("DELETE requests=%d, want exactly one without retry", deletes)
+	}
+	if strings.Contains(out, "REVOKED") {
+		t.Fatalf("output=%q, must not report success when local history append fails", out)
+	}
+}
+
 func TestSharingRemoveUsesFreshOwnedResourceAndExactBodylessDelete(t *testing.T) {
 	deleteReached := false
 	server := sharingTestServer(t, `<MediaContainer><Device name="Resolved Server" clientIdentifier="resolved-machine" provides="server" owned="1"/></MediaContainer>`, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/users/" {
 			w.Header().Set("Content-Type", "application/xml")
 			_, _ = w.Write([]byte(`<MediaContainer><User username="friend" home="0"><Server id="99" machineIdentifier="resolved-machine" owned="1"/></User></MediaContainer>`))
+			return
+		}
+		if r.URL.Path == "/api/servers/resolved-machine/shared_servers/99" && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = w.Write([]byte(`<SharedServer><Section id="7" key="1" title="Movies"/></SharedServer>`))
 			return
 		}
 		if r.Method != http.MethodDelete || r.URL.Path != "/api/servers/resolved-machine/shared_servers/99" {

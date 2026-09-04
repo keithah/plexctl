@@ -178,6 +178,21 @@ func TestResolveOwnedResourceSharing(t *testing.T) {
 	})
 }
 
+func TestFindExternalOwnedShareReturnsExactlyMatchedSnapshot(t *testing.T) {
+	email := "friend@example.com"
+	users := []SharedUser{
+		{ID: 42, Username: "friend", Email: &email, ServerShares: []SharedServer{{ID: 99, ServerID: 123, MachineIdentifier: "machine-1", Name: "Plex", AllLibraries: true, Pending: true, Owned: true}}},
+	}
+
+	user, share, err := FindExternalOwnedShare(users, "machine-1", 99)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.ID != 42 || user.Username != "friend" || user.Email == nil || *user.Email != email || share.ID != 99 || share.ServerID != 123 || share.MachineIdentifier != "machine-1" || share.Name != "Plex" || !share.AllLibraries || !share.Pending || !share.Owned {
+		t.Fatalf("matched snapshot user=%+v share=%+v", user, share)
+	}
+}
+
 func TestValidateExternalOwnedShare(t *testing.T) {
 	users := []SharedUser{
 		{Username: "home", Home: true, ServerShares: []SharedServer{{ID: 101, MachineIdentifier: "machine-1", Owned: true}}},
