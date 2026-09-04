@@ -101,6 +101,14 @@ func TestResourcesFallsBackToJSONForUnrelatedXML(t *testing.T) {
 			return
 		}
 		if r.URL.Path == "/api/v2/resources" {
+			if got := r.URL.Query().Get("includeHttps"); got != "1" {
+				http.NotFound(w, r)
+				return
+			}
+			if got := r.URL.Query().Get("includeRelay"); got != "1" {
+				http.NotFound(w, r)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			if _, err := w.Write([]byte(`[{"name":"JSON server","clientIdentifier":"json1"}]`)); err != nil {
 				t.Errorf("write response: %v", err)
@@ -114,6 +122,58 @@ func TestResourcesFallsBackToJSONForUnrelatedXML(t *testing.T) {
 	r, err := c.Resources(context.Background(), "token")
 	if err != nil || len(r) != 1 || r[0].Name != "JSON server" {
 		t.Fatalf("resources=%+v err=%v", r, err)
+	}
+}
+
+func TestResourcesRetriesTransientJSONFallbackFailure(t *testing.T) {
+	var jsonCalls int
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/resources" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.URL.Path != "/api/v2/resources" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.URL.Query().Get("includeHttps") != "1" || r.URL.Query().Get("includeRelay") != "1" {
+			http.NotFound(w, r)
+			return
+		}
+		jsonCalls++
+		if jsonCalls == 1 {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"name":"Recovered server","clientIdentifier":"recovered","provides":"server"}]`))
+	}))
+	defer s.Close()
+
+	got, err := New(s.URL, "test", &http.Client{}).Resources(context.Background(), "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ClientIdentifier != "recovered" || jsonCalls != 2 {
+		t.Fatalf("resources=%+v jsonCalls=%d, want recovered resource after second attempt", got, jsonCalls)
+	}
+}
+
+func TestResourcesDoesNotRetryAuthenticationFailure(t *testing.T) {
+	var jsonCalls int
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/resources" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		jsonCalls++
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer s.Close()
+
+	_, err := New(s.URL, "test", &http.Client{}).Resources(context.Background(), "token")
+	if err == nil || jsonCalls != 1 {
+		t.Fatalf("err=%v jsonCalls=%d, want immediate authentication failure", err, jsonCalls)
 	}
 }
 
