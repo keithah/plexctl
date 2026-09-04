@@ -97,6 +97,83 @@ func TestSharingLibrariesUsesExactOwnedResourceResolution(t *testing.T) {
 	}
 }
 
+func TestSharingUnprofiledSelectorsUseCurrentAccountAndFreshOwnedResource(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		operation string
+		selector  string
+	}{
+		{name: "libraries accepts exact fresh name", operation: "libraries", selector: "Fresh Server"},
+		{name: "libraries accepts exact fresh client identifier", operation: "libraries", selector: "fresh-machine"},
+		{name: "invite accepts exact fresh name", operation: "invite", selector: "Fresh Server"},
+		{name: "update accepts exact fresh client identifier", operation: "update", selector: "fresh-machine"},
+		{name: "remove accepts exact fresh name", operation: "remove", selector: "Fresh Server"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mutationReached := false
+			server := sharingTestServer(t, `<MediaContainer><Device name="Fresh Server" clientIdentifier="fresh-machine" provides="server" owned="1"/></MediaContainer>`, func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/users/":
+					w.Header().Set("Content-Type", "application/xml")
+					_, _ = w.Write([]byte(`<MediaContainer><User username="friend" home="0"><Server id="99" machineIdentifier="fresh-machine" owned="1"/></User></MediaContainer>`))
+				case "/api/servers/fresh-machine":
+					w.Header().Set("Content-Type", "application/xml")
+					_, _ = w.Write([]byte(`<MediaContainer><Server><Section id="7" key="1" title="Movies"/></Server></MediaContainer>`))
+				case "/api/servers/fresh-machine/shared_servers":
+					if tc.operation != "invite" || r.Method != http.MethodPost {
+						http.NotFound(w, r)
+						return
+					}
+					mutationReached = true
+					w.WriteHeader(http.StatusCreated)
+				case "/api/servers/fresh-machine/shared_servers/99":
+					wantMethod := http.MethodPut
+					if tc.operation == "remove" {
+						wantMethod = http.MethodDelete
+					}
+					if r.Method != wantMethod {
+						http.NotFound(w, r)
+						return
+					}
+					mutationReached = true
+					w.WriteHeader(http.StatusNoContent)
+				default:
+					http.NotFound(w, r)
+				}
+			})
+			configureSharingTestAccount(t, "alice", "configured-server", "configured-machine", "account-token")
+			useSharingPlexServer(t, server)
+
+			args := []string{"sharing", tc.operation}
+			switch tc.operation {
+			case "invite":
+				args = append(args, "friend@example.com")
+			case "update", "remove":
+				args = append(args, "99")
+			}
+			args = append(args, "--server", tc.selector)
+			switch tc.operation {
+			case "invite", "update":
+				args = append(args, "--libraries", "7")
+			case "remove":
+				args = append(args, "--yes")
+			}
+
+			var err error
+			out := captureStdout(t, func() { _, err = run(t, args...) })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.operation != "libraries" && !mutationReached {
+				t.Fatalf("%s did not reach its exact mutation endpoint", tc.operation)
+			}
+			if strings.Contains(out, "account-token") {
+				t.Fatalf("output leaked Plex token: %q", out)
+			}
+		})
+	}
+}
+
 func TestSharingLibrariesRejectsUnsafeResourceBeforeLibraryEndpoint(t *testing.T) {
 	cases := []struct {
 		name      string

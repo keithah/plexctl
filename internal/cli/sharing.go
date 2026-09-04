@@ -118,13 +118,9 @@ func sharingLibrariesCmd(o *options) *cobra.Command {
 		if server == "" {
 			return fmt.Errorf("sharing libraries requires --server or a current configured server")
 		}
-		profile, ok := c.ServersV2[server]
-		if !ok {
-			return fmt.Errorf("server %q is not configured", server)
-		}
-		selector := profile.MachineIdentifier
-		if selector == "" {
-			selector = server
+		selector := server
+		if profile, ok := c.ServersV2[server]; ok && profile.MachineIdentifier != "" {
+			selector = profile.MachineIdentifier
 		}
 		ctx, cancel := commandContext(o)
 		defer cancel()
@@ -430,11 +426,7 @@ func sharingInviteProfile(selector string) (string, config.ServerProfile, error)
 	if selector == "" {
 		return "", config.ServerProfile{}, fmt.Errorf("sharing invite requires --server or a current configured server")
 	}
-	profile, ok := c.ServersV2[selector]
-	if !ok {
-		return "", config.ServerProfile{}, fmt.Errorf("server %q is not configured", selector)
-	}
-	return selector, profile, nil
+	return selector, c.ServersV2[selector], nil
 }
 
 func sharingAccountToken(server string) (config.Config, string, string, error) {
@@ -443,11 +435,7 @@ func sharingAccountToken(server string) (config.Config, string, string, error) {
 		return config.Config{}, "", "", err
 	}
 	account := c.CurrentAccount
-	if server != "" {
-		profile, ok := c.ServersV2[server]
-		if !ok {
-			return config.Config{}, "", "", fmt.Errorf("server %q is not configured", server)
-		}
+	if profile, ok := c.ServersV2[server]; ok {
 		account = profile.Account
 	}
 	if account == "" {
