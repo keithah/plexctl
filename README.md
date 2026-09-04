@@ -63,6 +63,23 @@ normal certificate verification.
 `serve --listen ADDR` — local HTTP adapter for Uptime Kuma (`GET /plex/<account>/<server>` → 200/503 JSON with classification; binds to `3003` by convention).
 - `api GET /path` — read-only access to any PMS endpoint.
 
+### External Plex sharing
+
+The `sharing` group manages **external** Plex server shares only; Plex Home and
+managed users are excluded.
+
+- `sharing users [--json]` — list external users and their owned-server shares,
+  including returned email, pending state, share ID, and grants.
+- `sharing libraries --server SERVER_ID [--json]` — list the current global
+  Plex.tv library-section IDs eligible for one owned server.
+- `sharing invite EMAIL_OR_USERNAME --server SERVER_ID (--libraries ID,ID | --all-libraries) [--dry-run]` — create one external share. The command validates the owned server and current global library IDs before POSTing.
+- `sharing update SHARE_ID --server SERVER_ID (--libraries ID,ID | --all-libraries) [--dry-run]` — **replaces** the share's complete library-grant set; it never merges the existing grants.
+- `sharing remove SHARE_ID --server SERVER_ID --yes [--dry-run]` — revoke exactly one external server share. `--yes` is mandatory; dry-run never contacts Plex.
+
+Sharing mutations use the stored protected account credential and fresh Plex.tv
+resource discovery. They do not accept token flags. `--dry-run` is a local
+preview; it does not resolve remote state, invite, update, or revoke.
+
 Read commands accept `--json`, `--server`, and `--timeout`, and every request
 honors the configured timeout. Raw API mutations are intentionally rejected
 until a typed command with an explicit confirmation gate exists.

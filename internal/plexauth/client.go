@@ -1,6 +1,7 @@
 package plexauth
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -65,6 +66,59 @@ type User struct {
 	Username string `json:"username"`
 	Email    string `json:"email"`
 }
+
+// SharedUser is an external Plex account connected through a server share.
+// Email is nil when Plex does not report one. Plex returns this data as XML.
+type SharedUser struct {
+	ID           int            `xml:"id,attr"`
+	Username     string         `xml:"username,attr"`
+	Email        *string        `xml:"email,attr"`
+	Home         bool           `xml:"home,attr"`
+	ServerShares []SharedServer `xml:"Server"`
+}
+
+// SharedServer is one external account's share on a Plex Media Server. ID is
+// the share identifier used by the shared_servers detail/update/delete path;
+// ServerID is Plex's distinct internal server identifier.
+type SharedServer struct {
+	ID                int    `xml:"id,attr"`
+	ServerID          int    `xml:"serverId,attr"`
+	MachineIdentifier string `xml:"machineIdentifier,attr"`
+	Name              string `xml:"name,attr"`
+	AllLibraries      bool   `xml:"allLibraries,attr"`
+	Pending           bool   `xml:"pending,attr"`
+	Owned             bool   `xml:"owned,attr"`
+}
+
+// LibrarySection is a Plex library section reported by Plex.tv. ID is the
+// Plex.tv sharing-library ID; Key is the separate, local PMS section key.
+type LibrarySection struct {
+	ID     int    `xml:"id,attr"`
+	Key    int    `xml:"key,attr"`
+	Shared bool   `xml:"shared,attr"`
+	Title  string `xml:"title,attr"`
+	Type   string `xml:"type,attr"`
+}
+
+// InviteRequest is the narrow external sharing request supported by Plex.tv.
+// LibrarySectionIDs are global Plex.tv section IDs, not local PMS keys.
+type InviteRequest struct {
+	MachineIdentifier string
+	InvitedEmail      string
+	LibrarySectionIDs []int
+}
+
+// HTTPError reports a non-success Plex.tv response without retaining its body.
+type HTTPError struct {
+	StatusCode int
+	Method     string
+	Path       string
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("plex request failed: %s %s: HTTP %d", e.Method, e.Path, e.StatusCode)
+}
+
 type Resource struct {
 	Name             string       `json:"name"`
 	ClientIdentifier string       `json:"clientIdentifier"`
@@ -219,6 +273,289 @@ func (c *Client) User(ctx context.Context, token string) (User, error) {
 	err := c.getJSON(ctx, "/api/v2/user", token, &v)
 	return v, err
 }
+
+// SharedUsers lists external Plex accounts and the server shares Plex reports
+// for each account. Plex's established sharing endpoint returns XML, not JSON.
+func (c *Client) SharedUsers(ctx context.Context, token string) ([]SharedUser, error) {
+	var payload struct {
+		XMLName xml.Name     `xml:"MediaContainer"`
+		Users   []SharedUser `xml:"User"`
+	}
+	if err := c.getXML(ctx, "/api/users/", token, &payload); err != nil {
+		return nil, err
+	}
+	return payload.Users, nil
+}
+
+// SharedServerSections lists the exact library grants of one external share.
+// shareID is the nested Server.id from SharedUsers, never ServerID.
+func (c *Client) SharedServerSections(ctx context.Context, token, machineID string, shareID int) ([]LibrarySection, error) {
+	var payload struct {
+		XMLName      xml.Name         `xml:""`
+		Sections     []LibrarySection `xml:"Section"`
+		SharedServer struct {
+			Sections []LibrarySection `xml:"Section"`
+		} `xml:"SharedServer"`
+	}
+	path := "/api/servers/" + url.PathEscape(machineID) + "/shared_servers/" + strconv.Itoa(shareID)
+	if err := c.getXML(ctx, path, token, &payload); err != nil {
+		return nil, err
+	}
+	switch payload.XMLName.Local {
+	case "SharedServer":
+		return payload.Sections, nil
+	case "MediaContainer":
+		if len(payload.SharedServer.Sections) > 0 {
+			return payload.SharedServer.Sections, nil
+		}
+		return payload.Sections, nil
+	default:
+		return nil, fmt.Errorf("unexpected Plex shared-server root %q", payload.XMLName.Local)
+	}
+}
+
+// ServerLibraries lists selectable Plex.tv sharing-library sections for one
+// selected server resource. This intentionally uses Plex.tv rather than a PMS
+// connection, because the Section IDs are global sharing IDs.
+func (c *Client) ServerLibraries(ctx context.Context, token, machineID string) ([]LibrarySection, error) {
+	var payload struct {
+		XMLName xml.Name `xml:"MediaContainer"`
+		Servers []struct {
+			Sections []LibrarySection `xml:"Section"`
+		} `xml:"Server"`
+	}
+	path := "/api/servers/" + url.PathEscape(machineID)
+	if err := c.getXML(ctx, path, token, &payload); err != nil {
+		return nil, err
+	}
+	if len(payload.Servers) != 1 {
+		return nil, fmt.Errorf("expected one Plex server in library response, got %d", len(payload.Servers))
+	}
+	return payload.Servers[0].Sections, nil
+}
+
+func (c *Client) Invite(ctx context.Context, token string, invite InviteRequest) error {
+	if invite.MachineIdentifier == "" {
+		return fmt.Errorf("invite requires a server machine identifier")
+	}
+	if invite.InvitedEmail == "" {
+		return fmt.Errorf("invite requires an external identifier")
+	}
+	if len(invite.LibrarySectionIDs) == 0 {
+		return fmt.Errorf("invite requires at least one library section ID")
+	}
+	payload := struct {
+		ServerID     string `json:"server_id"`
+		SharedServer struct {
+			LibrarySectionIDs []int  `json:"library_section_ids"`
+			InvitedEmail      string `json:"invited_email"`
+		} `json:"shared_server"`
+		SharingSettings struct {
+			AllowSync         string `json:"allowSync"`
+			AllowCameraUpload string `json:"allowCameraUpload"`
+			AllowChannels     string `json:"allowChannels"`
+			FilterMovies      string `json:"filterMovies"`
+			FilterTelevision  string `json:"filterTelevision"`
+			FilterMusic       string `json:"filterMusic"`
+		} `json:"sharing_settings"`
+	}{ServerID: invite.MachineIdentifier}
+	payload.SharedServer.LibrarySectionIDs = invite.LibrarySectionIDs
+	payload.SharedServer.InvitedEmail = invite.InvitedEmail
+	payload.SharingSettings.AllowSync = "0"
+	payload.SharingSettings.AllowCameraUpload = "0"
+	payload.SharingSettings.AllowChannels = "0"
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("encode Plex invite request: %w", err)
+	}
+	path := "/api/servers/" + url.PathEscape(invite.MachineIdentifier) + "/shared_servers"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Plex-Client-Identifier", c.ClientID)
+	req.Header.Set("X-Plex-Product", c.Product)
+	req.Header.Set("X-Plex-Token", token)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if _, err := readLimited(resp.Body, 1<<20, "Plex invite"); err != nil {
+		return err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &HTTPError{StatusCode: resp.StatusCode, Method: http.MethodPost, Path: path}
+	}
+	return nil
+}
+
+// RemoveShare revokes exactly one external Plex server share. shareID is the
+// nested Server.id from SharedUsers, never ServerID. Plex's delete contract has
+// no documented JSON payload, so this request deliberately has no body.
+func (c *Client) RemoveShare(ctx context.Context, token, machineID string, shareID int) error {
+	if machineID == "" {
+		return fmt.Errorf("share removal requires a server machine identifier")
+	}
+	if shareID <= 0 {
+		return fmt.Errorf("share removal requires a positive share ID")
+	}
+	path := "/api/servers/" + url.PathEscape(machineID) + "/shared_servers/" + strconv.Itoa(shareID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.BaseURL+path, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Plex-Client-Identifier", c.ClientID)
+	req.Header.Set("X-Plex-Product", c.Product)
+	req.Header.Set("X-Plex-Token", token)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if _, err := readLimited(resp.Body, 1<<20, "Plex share removal"); err != nil {
+		return err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &HTTPError{StatusCode: resp.StatusCode, Method: http.MethodDelete, Path: path}
+	}
+	return nil
+}
+
+// UpdateShare replaces the complete library grant set for one exact external
+// Plex share. Library section IDs are global Plex.tv IDs, not local PMS keys.
+// It does not fetch or merge the prior grant set.
+func (c *Client) UpdateShare(ctx context.Context, token, machineID string, shareID int, librarySectionIDs []int) error {
+	if machineID == "" {
+		return fmt.Errorf("share update requires a server machine identifier")
+	}
+	if shareID <= 0 {
+		return fmt.Errorf("share update requires a positive share ID")
+	}
+	if len(librarySectionIDs) == 0 {
+		return fmt.Errorf("share update requires at least one library section ID")
+	}
+	for _, id := range librarySectionIDs {
+		if id <= 0 {
+			return fmt.Errorf("share update requires positive library section IDs")
+		}
+	}
+	payload := struct {
+		ServerID     string `json:"server_id"`
+		SharedServer struct {
+			LibrarySectionIDs []int `json:"library_section_ids"`
+		} `json:"shared_server"`
+	}{ServerID: machineID}
+	payload.SharedServer.LibrarySectionIDs = librarySectionIDs
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("encode Plex share update request: %w", err)
+	}
+	path := "/api/servers/" + url.PathEscape(machineID) + "/shared_servers/" + strconv.Itoa(shareID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.BaseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Plex-Client-Identifier", c.ClientID)
+	req.Header.Set("X-Plex-Product", c.Product)
+	req.Header.Set("X-Plex-Token", token)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if _, err := readLimited(resp.Body, 1<<20, "Plex share update"); err != nil {
+		return err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &HTTPError{StatusCode: resp.StatusCode, Method: http.MethodPut, Path: path}
+	}
+	return nil
+}
+
+// ResolveOwnedResource resolves an exact resource client identifier or server
+// name and ensures that the selected resource belongs to the current account.
+func ResolveOwnedResource(resources []Resource, selector string) (Resource, error) {
+	var matches []Resource
+	for _, resource := range resources {
+		if resource.ClientIdentifier == selector {
+			matches = append(matches, resource)
+		}
+	}
+	if len(matches) == 0 {
+		for _, resource := range resources {
+			if resource.Name == selector {
+				matches = append(matches, resource)
+			}
+		}
+	}
+	if len(matches) == 0 {
+		return Resource{}, fmt.Errorf("no Plex server matches %q", selector)
+	}
+	if len(matches) > 1 {
+		return Resource{}, fmt.Errorf("ambiguous Plex server %q; candidates: %s", selector, resourceCandidates(matches))
+	}
+	if !matches[0].Owned {
+		return Resource{}, fmt.Errorf("Plex server %q (%s) is not owned by the authenticated account", matches[0].Name, matches[0].ClientIdentifier)
+	}
+	return matches[0], nil
+}
+
+func resourceCandidates(resources []Resource) string {
+	candidates := make([]string, 0, len(resources))
+	for _, resource := range resources {
+		candidates = append(candidates, fmt.Sprintf("%q (%s)", resource.Name, resource.ClientIdentifier))
+	}
+	return strings.Join(candidates, ", ")
+}
+
+// ValidateExternalOwnedShare proves a selected share is reported exactly once as
+// an owned share of a non-Home user on the selected server.
+func ValidateExternalOwnedShare(users []SharedUser, machineID string, shareID int) error {
+	if machineID == "" || shareID <= 0 {
+		return fmt.Errorf("selected share is not exactly one owned external share on the selected server")
+	}
+
+	var matchedUser SharedUser
+	var matchedShare SharedServer
+	matches := 0
+	for _, user := range users {
+		for _, share := range user.ServerShares {
+			if share.ID != shareID {
+				continue
+			}
+			matches++
+			matchedUser = user
+			matchedShare = share
+		}
+	}
+	if matches != 1 || matchedUser.Home || !matchedShare.Owned || matchedShare.MachineIdentifier != machineID {
+		return fmt.Errorf("selected share is not exactly one owned external share on the selected server")
+	}
+	return nil
+}
+
+// ValidateLibraryIDs confirms each requested Plex.tv sharing-library ID exists
+// on the selected server before a sharing mutation is sent.
+func ValidateLibraryIDs(libraries []LibrarySection, requested []string) error {
+	known := make(map[string]struct{}, len(libraries))
+	for _, library := range libraries {
+		known[strconv.Itoa(library.ID)] = struct{}{}
+	}
+	for _, id := range requested {
+		if _, ok := known[id]; !ok {
+			return fmt.Errorf("unknown Plex.tv library ID %q", id)
+		}
+	}
+	return nil
+}
+
 func (c *Client) Resources(ctx context.Context, token string) ([]Resource, error) {
 	resources, err := c.legacyResources(ctx, token)
 	if err != nil {
@@ -348,6 +685,33 @@ func (c *Client) getJSON(ctx context.Context, path, token string, out any) error
 	}
 	return nil
 }
+func (c *Client) getXML(ctx context.Context, path, token string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/xml")
+	req.Header.Set("X-Plex-Client-Identifier", c.ClientID)
+	req.Header.Set("X-Plex-Product", c.Product)
+	req.Header.Set("X-Plex-Token", token)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	data, err := readLimited(resp.Body, 4<<20, "Plex")
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &HTTPError{StatusCode: resp.StatusCode, Method: http.MethodGet, Path: path}
+	}
+	if err := xml.Unmarshal(data, out); err != nil {
+		return fmt.Errorf("decode Plex response: %w", err)
+	}
+	return nil
+}
+
 func (c *Client) request(ctx context.Context, method, path string, query url.Values, out *pinResponse) error {
 	u := c.BaseURL + path
 	if len(query) != 0 {

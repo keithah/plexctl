@@ -39,7 +39,7 @@ func NewRoot() *cobra.Command {
 	root.PersistentFlags().StringVar(&o.server, "server", "", "configured server name")
 	root.PersistentFlags().BoolVar(&o.jsonOut, "json", false, "print JSON")
 	root.PersistentFlags().DurationVar(&o.timeout, "timeout", o.timeout, "request timeout")
-	root.AddCommand(configCmd(), authCmd(), accountsCmd(), serversCmd(), serverCmd(o), libraryCmd(o), metadataCmd(o), sessionsCmd(o), playlistsCmd(o), collectionsCmd(o), queuesCmd(o), transcodeCmd(o), healthCmd(o), serveCmd(o), apiCmd(o))
+	root.AddCommand(configCmd(), authCmd(), accountsCmd(), serversCmd(), serverCmd(o), libraryCmd(o), metadataCmd(o), sessionsCmd(o), playlistsCmd(o), collectionsCmd(o), queuesCmd(o), transcodeCmd(o), healthCmd(o), serveCmd(o), sharingCmd(o), apiCmd(o))
 	return root
 }
 func Execute() {
