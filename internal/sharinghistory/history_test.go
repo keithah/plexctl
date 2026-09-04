@@ -180,6 +180,58 @@ func TestPurgeBeforeKeepsRecordsAtAndAfterCutoff(t *testing.T) {
 	}
 }
 
+func TestPurgeBeforeHandlesLegacyRFC3339NanoTimestamp(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "sharing-history.db")
+	history := Open(databasePath)
+	ctx := context.Background()
+
+	// Seed a timestamp produced by the pre-Task-3 Append implementation. Its
+	// fractional part is variable-width RFC3339Nano and must be compared by
+	// instant, not SQLite's lexical TEXT order.
+	db, err := history.openDatabase()
+	if err != nil {
+		t.Fatalf("open history database: %v", err)
+	}
+	_, err = db.ExecContext(ctx, `INSERT INTO removed_external_shares (
+		removed_at, plex_user_id, username, email, share_id, server_name,
+		server_client_identifier, all_libraries, pending, library_section_ids
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"2026-09-04T12:00:00.49Z", 1, "legacy-before-cutoff", nil, 1,
+		"server", "server-id", 0, 0, "[]",
+	)
+	if closeErr := db.Close(); closeErr != nil {
+		t.Fatalf("close seeded history database: %v", closeErr)
+	}
+	if err != nil {
+		t.Fatalf("seed legacy history row: %v", err)
+	}
+
+	cutoff := time.Date(2026, time.September, 4, 12, 0, 0, 495000000, time.UTC)
+	count, err := history.CountBefore(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("count before cutoff: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("CountBefore() = %d, want 1 for legacy timestamp before cutoff", count)
+	}
+
+	deleted, err := history.PurgeBefore(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("purge before cutoff: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("PurgeBefore() deleted %d records, want 1 for legacy timestamp before cutoff", deleted)
+	}
+
+	remaining, err := history.List(ctx)
+	if err != nil {
+		t.Fatalf("list remaining records: %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("List() returned %d records after purge, want 0", len(remaining))
+	}
+}
+
 func TestAppendSecuresExistingHistoryDirectory(t *testing.T) {
 	parentDirectory := filepath.Join(t.TempDir(), "existing-history")
 	if err := os.Mkdir(parentDirectory, 0o755); err != nil {

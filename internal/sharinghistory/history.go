@@ -233,7 +233,62 @@ func (h *History) openDatabase() (*sql.DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("initialize removal history database: %w", err)
 	}
+	if err := normalizeTimestamps(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return db, nil
+}
+
+func normalizeTimestamps(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin removal timestamp normalization: %w", err)
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query(`SELECT id, removed_at FROM removed_external_shares`)
+	if err != nil {
+		return fmt.Errorf("query removal timestamps for normalization: %w", err)
+	}
+	defer rows.Close()
+
+	type timestampRow struct {
+		id        int64
+		removedAt string
+	}
+	var timestamps []timestampRow
+	for rows.Next() {
+		var timestamp timestampRow
+		if err := rows.Scan(&timestamp.id, &timestamp.removedAt); err != nil {
+			return fmt.Errorf("scan removal timestamp for normalization: %w", err)
+		}
+		timestamps = append(timestamps, timestamp)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate removal timestamps for normalization: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close removal timestamps for normalization: %w", err)
+	}
+
+	for _, timestamp := range timestamps {
+		parsed, err := time.Parse(time.RFC3339Nano, timestamp.removedAt)
+		if err != nil {
+			return fmt.Errorf("parse removal timestamp for normalization: %w", err)
+		}
+		formatted := formatTimestamp(parsed)
+		if formatted == timestamp.removedAt {
+			continue
+		}
+		if _, err := tx.Exec(`UPDATE removed_external_shares SET removed_at = ? WHERE id = ?`, formatted, timestamp.id); err != nil {
+			return fmt.Errorf("normalize removal timestamp: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit removal timestamp normalization: %w", err)
+	}
+	return nil
 }
 
 func formatTimestamp(value time.Time) string {
