@@ -165,8 +165,12 @@ func (h *History) List(ctx context.Context) ([]Record, error) {
 }
 
 func (h *History) openDatabase() (*sql.DB, error) {
-	if err := os.MkdirAll(filepath.Dir(h.path), 0o700); err != nil {
+	parentDirectory := filepath.Dir(h.path)
+	if err := os.MkdirAll(parentDirectory, 0o700); err != nil {
 		return nil, fmt.Errorf("create removal history directory: %w", err)
+	}
+	if err := os.Chmod(parentDirectory, 0o700); err != nil {
+		return nil, fmt.Errorf("set removal history directory permissions: %w", err)
 	}
 	file, err := os.OpenFile(h.path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {

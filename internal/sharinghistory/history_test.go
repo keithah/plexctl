@@ -136,6 +136,30 @@ func TestAppendAndList(t *testing.T) {
 	}
 }
 
+func TestAppendSecuresExistingHistoryDirectory(t *testing.T) {
+	parentDirectory := filepath.Join(t.TempDir(), "existing-history")
+	if err := os.Mkdir(parentDirectory, 0o755); err != nil {
+		t.Fatalf("create existing history directory: %v", err)
+	}
+	if err := os.Chmod(parentDirectory, 0o755); err != nil {
+		t.Fatalf("set existing history directory permissions: %v", err)
+	}
+
+	databasePath := filepath.Join(parentDirectory, "sharing-history.db")
+	history := Open(databasePath)
+	if err := history.Append(context.Background(), Record{}); err != nil {
+		t.Fatalf("append removal history: %v", err)
+	}
+
+	info, err := os.Stat(parentDirectory)
+	if err != nil {
+		t.Fatalf("stat history directory: %v", err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Fatalf("history directory mode = %o, want 0700", info.Mode().Perm())
+	}
+}
+
 func TestListMissingDatabaseReturnsEmptyWithoutCreatingFile(t *testing.T) {
 	databasePath := filepath.Join(t.TempDir(), "missing", "sharing-history.db")
 	history := Open(databasePath)
