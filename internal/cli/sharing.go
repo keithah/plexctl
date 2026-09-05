@@ -71,7 +71,11 @@ func sharingRemovedCmd(o *options) *cobra.Command {
 	cmd := &cobra.Command{Use: "removed", Short: "List locally recorded removed external shares", Args: cobra.NoArgs, RunE: func(*cobra.Command, []string) error {
 		ctx, cancel := commandContext(o)
 		defer cancel()
-		records, err := sharinghistory.Open(sharinghistory.Path()).List(ctx)
+		path, err := sharinghistory.Path()
+		if err != nil {
+			return err
+		}
+		records, err := sharinghistory.Open(path).List(ctx)
 		if err != nil {
 			return err
 		}
@@ -123,7 +127,11 @@ func sharingRemovedPurgeCmd(o *options) *cobra.Command {
 
 			ctx, cancel := commandContext(o)
 			defer cancel()
-			history := sharinghistory.Open(sharinghistory.Path())
+			path, err := sharinghistory.Path()
+			if err != nil {
+				return err
+			}
+			history := sharinghistory.Open(path)
 			cutoff := sharingHistoryNow().Add(-duration)
 			if dryRun {
 				count, err := history.CountBeforeReadOnly(ctx, cutoff)
@@ -319,7 +327,11 @@ func sharingRemoveCmd(o *options) *cobra.Command {
 			for _, grant := range grants {
 				grantIDs = append(grantIDs, grant.ID)
 			}
-			if err := sharinghistory.Open(sharinghistory.Path()).Append(ctx, sharinghistory.Record{
+			historyPath, err := sharinghistory.Path()
+			if err != nil {
+				return fmt.Errorf("Plex share revocation succeeded but local history path resolution failed: %w", err)
+			}
+			if err := sharinghistory.Open(historyPath).Append(ctx, sharinghistory.Record{
 				RemovedAt:              time.Now(),
 				PlexUserID:             int64(matchedUser.ID),
 				Username:               matchedUser.Username,

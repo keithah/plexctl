@@ -17,6 +17,8 @@ import (
 
 const timestampLayout = "2006-01-02T15:04:05.000000000Z07:00"
 
+var userConfigDir = os.UserConfigDir
+
 const schema = `
 CREATE TABLE IF NOT EXISTS removed_external_shares (
   id INTEGER PRIMARY KEY,
@@ -59,15 +61,18 @@ func Open(path string) *History {
 }
 
 // Path returns the local SQLite database path for sharing removal history.
-func Path() string {
+func Path() (string, error) {
 	if path := os.Getenv("PLEXCTL_SHARING_HISTORY_DB"); path != "" {
-		return path
+		return path, nil
 	}
 	if dataHome := os.Getenv("XDG_DATA_HOME"); dataHome != "" {
-		return filepath.Join(dataHome, "plexctl", "sharing-history.db")
+		return filepath.Join(dataHome, "plexctl", "sharing-history.db"), nil
 	}
-	configHome, _ := os.UserConfigDir()
-	return filepath.Join(configHome, "plexctl", "sharing-history.db")
+	configHome, err := userConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("determine sharing history configuration directory: %w", err)
+	}
+	return filepath.Join(configHome, "plexctl", "sharing-history.db"), nil
 }
 
 // Append stores record in the local history.

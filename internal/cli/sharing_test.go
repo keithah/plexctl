@@ -767,7 +767,7 @@ func TestSharingRemoveDoesNotRecordWithoutProvenSuccessfulRevocation(t *testing.
 	})
 }
 
-func TestSharingRemoveReportsPartialSuccessWhenHistoryAppendFails(t *testing.T) {
+func TestSharingRemoveReportsPartialSuccessWhenHistoryPersistenceFails(t *testing.T) {
 	deletes := 0
 	server := sharingTestServer(t, `<MediaContainer><Device name="Fresh Server" clientIdentifier="fresh-machine" provides="server" owned="1"/></MediaContainer>`, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -791,21 +791,48 @@ func TestSharingRemoveReportsPartialSuccessWhenHistoryAppendFails(t *testing.T) 
 		}
 	})
 	configureSharingTestAccount(t, "alice", "configured-server", "fresh-machine", "account-token")
-	t.Setenv("PLEXCTL_SHARING_HISTORY_DB", t.TempDir()) // A directory cannot be opened as the SQLite history file.
 	useSharingPlexServer(t, server)
 
-	var err error
-	out := captureStdout(t, func() {
-		_, err = run(t, "sharing", "remove", "99", "--server", "configured-server", "--yes")
-	})
-	if err == nil || !strings.Contains(err.Error(), "revocation succeeded but local history recording failed") {
-		t.Fatalf("error=%v, want explicit partial-success error", err)
+	for _, tc := range []struct {
+		name      string
+		configure func(*testing.T)
+		wantError string
+	}{
+		{
+			name: "append failure",
+			configure: func(t *testing.T) {
+				t.Setenv("PLEXCTL_SHARING_HISTORY_DB", t.TempDir()) // A directory cannot be opened as the SQLite history file.
+			},
+			wantError: "revocation succeeded but local history recording failed",
+		},
+		{
+			name: "default path resolution failure",
+			configure: func(t *testing.T) {
+				t.Setenv("PLEXCTL_SHARING_HISTORY_DB", "")
+				t.Setenv("XDG_DATA_HOME", "")
+				t.Setenv("XDG_CONFIG_HOME", "")
+				t.Setenv("HOME", "")
+			},
+			wantError: "revocation succeeded but local history path resolution failed",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.configure(t)
+
+			var err error
+			out := captureStdout(t, func() {
+				_, err = run(t, "sharing", "remove", "99", "--server", "configured-server", "--yes")
+			})
+			if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("error=%v, want explicit partial-success error containing %q", err, tc.wantError)
+			}
+			if strings.Contains(out, "REVOKED") {
+				t.Fatalf("output=%q, must not report success when local history persistence fails", out)
+			}
+		})
 	}
-	if deletes != 1 {
-		t.Fatalf("DELETE requests=%d, want exactly one without retry", deletes)
-	}
-	if strings.Contains(out, "REVOKED") {
-		t.Fatalf("output=%q, must not report success when local history append fails", out)
+	if deletes != 2 {
+		t.Fatalf("DELETE requests=%d, want exactly one per failed local history persistence without retry", deletes)
 	}
 }
 
@@ -989,6 +1016,39 @@ func TestSharingRemovedEmptyOrMissingHistorySucceedsWithoutPlexOrAuth(t *testing
 				t.Fatalf("output=%q, want empty JSON list", out)
 			}
 		})
+	}
+}
+
+func TestSharingRemovedFailsClosedWhenDefaultHistoryPathCannotBeResolved(t *testing.T) {
+	t.Setenv("PLEXCTL_SHARING_HISTORY_DB", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", "")
+
+	if _, err := sharinghistory.Path(); err == nil {
+		t.Fatal("Path() succeeded without any user configuration directory")
+	}
+
+	workingDirectory := t.TempDir()
+	originalWorkingDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(workingDirectory); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalWorkingDirectory) })
+
+	for _, args := range [][]string{
+		{"sharing", "removed"},
+		{"sharing", "removed", "purge", "--older-than", "1h", "--yes"},
+	} {
+		if _, err := run(t, args...); err == nil || !strings.Contains(err.Error(), "determine sharing history configuration directory") {
+			t.Fatalf("%v error = %v, want default history path resolution failure", args, err)
+		}
+		if _, err := os.Stat(filepath.Join(workingDirectory, "plexctl")); !os.IsNotExist(err) {
+			t.Fatalf("%v created default relative history directory: %v", args, err)
+		}
 	}
 }
 

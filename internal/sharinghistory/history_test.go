@@ -3,6 +3,7 @@ package sharinghistory
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -15,7 +16,11 @@ func TestPathUsesExplicitEnvironmentOverride(t *testing.T) {
 	const override = "/tmp/custom-history.db"
 	t.Setenv("PLEXCTL_SHARING_HISTORY_DB", override)
 
-	if got := Path(); got != override {
+	got, err := Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != override {
 		t.Fatalf("Path() = %q, want exact override %q", got, override)
 	}
 }
@@ -26,8 +31,30 @@ func TestPathUsesXDGDataHome(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", xdgDataHome)
 
 	want := filepath.Join(xdgDataHome, "plexctl", "sharing-history.db")
-	if got := Path(); got != want {
+	got, err := Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
 		t.Fatalf("Path() = %q, want %q", got, want)
+	}
+}
+
+func TestPathReturnsUserConfigDirectoryError(t *testing.T) {
+	t.Setenv("PLEXCTL_SHARING_HISTORY_DB", "")
+	t.Setenv("XDG_DATA_HOME", "")
+
+	wantErr := errors.New("user config directory unavailable")
+	originalUserConfigDir := userConfigDir
+	userConfigDir = func() (string, error) { return "", wantErr }
+	t.Cleanup(func() { userConfigDir = originalUserConfigDir })
+
+	path, err := Path()
+	if path != "" {
+		t.Fatalf("Path() path = %q, want empty path on config discovery error", path)
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Path() error = %v, want wrapped %v", err, wantErr)
 	}
 }
 
@@ -40,7 +67,11 @@ func TestPathFallsBackToConfigDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := filepath.Join(configHome, "plexctl", "sharing-history.db")
-	if got := Path(); got != want {
+	got, err := Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
 		t.Fatalf("Path() = %q, want %q", got, want)
 	}
 }
@@ -48,7 +79,11 @@ func TestPathFallsBackToConfigDirectory(t *testing.T) {
 func TestAppendAndList(t *testing.T) {
 	databasePath := filepath.Join(t.TempDir(), "private", "sharing-history.db")
 	t.Setenv("PLEXCTL_SHARING_HISTORY_DB", databasePath)
-	history := Open(Path())
+	path, err := Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	history := Open(path)
 	ctx := context.Background()
 
 	older := Record{
