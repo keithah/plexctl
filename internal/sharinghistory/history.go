@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -108,6 +109,33 @@ func (h *History) Append(ctx context.Context, record Record) error {
 // CountBefore returns the number of records removed strictly before cutoff.
 func (h *History) CountBefore(ctx context.Context, cutoff time.Time) (int64, error) {
 	db, err := h.openDatabase()
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+
+	var count int64
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM removed_external_shares WHERE removed_at < ?`,
+		formatTimestamp(cutoff),
+	).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count removal history before cutoff: %w", err)
+	}
+	return count, nil
+}
+
+// CountBeforeReadOnly returns the number of records removed strictly before
+// cutoff without creating, initializing, migrating, or changing the history
+// database. A missing history database has no records.
+func (h *History) CountBeforeReadOnly(ctx context.Context, cutoff time.Time) (int64, error) {
+	if _, err := os.Stat(h.path); err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("stat removal history: %w", err)
+	}
+
+	db, err := h.openReadOnlyDatabase()
 	if err != nil {
 		return 0, err
 	}
@@ -236,6 +264,15 @@ func (h *History) openDatabase() (*sql.DB, error) {
 	if err := normalizeTimestamps(db); err != nil {
 		db.Close()
 		return nil, err
+	}
+	return db, nil
+}
+
+func (h *History) openReadOnlyDatabase() (*sql.DB, error) {
+	databaseURL := (&url.URL{Scheme: "file", Path: h.path, RawQuery: "mode=ro"}).String()
+	db, err := sql.Open("sqlite", databaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("open removal history database read-only: %w", err)
 	}
 	return db, nil
 }

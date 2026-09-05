@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -1068,6 +1069,39 @@ func TestSharingRemovedPurgeDeletesOnlyRecordsStrictlyBeforeCutoffWithoutPlex(t 
 	}
 	if len(records) != 2 || records[0].Username != "newer" || records[1].Username != "at-cutoff" {
 		t.Fatalf("records=%+v, want only records at or after cutoff", records)
+	}
+}
+
+func TestSharingRemovedPurgeRejectsJSON(t *testing.T) {
+	for _, jsonFlag := range []string{"--json", "--json=false"} {
+		t.Run(jsonFlag, func(t *testing.T) {
+			_, err := run(t, "sharing", "removed", "purge", "--older-than", "2h", "--yes", jsonFlag)
+			if err == nil || !strings.Contains(err.Error(), "--json") {
+				t.Fatalf("error=%v, want --json rejection", err)
+			}
+		})
+	}
+}
+
+func TestSharingRemovedPurgeDryRunOnAbsentHistoryLeavesDatabaseAbsentWithoutPlex(t *testing.T) {
+	historyPath := filepath.Join(t.TempDir(), "missing", "sharing-history.db")
+	t.Setenv("PLEXCTL_SHARING_HISTORY_DB", historyPath)
+	oldClient := sharingPlexClient
+	sharingPlexClient = func() *plexauth.Client { panic("sharing removed purge must not create a Plex client") }
+	t.Cleanup(func() { sharingPlexClient = oldClient })
+
+	var err error
+	out := captureStdout(t, func() {
+		_, err = run(t, "sharing", "removed", "purge", "--older-than", "2h", "--yes", "--dry-run")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "dry run: 0 locally recorded removed share would be purged\n" {
+		t.Fatalf("output=%q, want zero local match count", out)
+	}
+	if _, err := os.Stat(historyPath); !os.IsNotExist(err) {
+		t.Fatalf("history database exists or stat failed after dry-run: %v", err)
 	}
 }
 

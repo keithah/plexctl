@@ -109,7 +109,10 @@ func sharingRemovedPurgeCmd(o *options) *cobra.Command {
 		Use:   "purge --older-than DURATION --yes [--dry-run]",
 		Short: "Purge aged locally recorded removed external shares",
 		Args:  cobra.NoArgs,
-		RunE: func(*cobra.Command, []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if cmd.Flags().Changed("json") {
+				return fmt.Errorf("sharing removed purge does not support --json")
+			}
 			duration, err := time.ParseDuration(olderThan)
 			if err != nil || duration <= 0 {
 				return fmt.Errorf("--older-than must be a strictly positive Go duration (for example, 2160h)")
@@ -123,7 +126,7 @@ func sharingRemovedPurgeCmd(o *options) *cobra.Command {
 			history := sharinghistory.Open(sharinghistory.Path())
 			cutoff := sharingHistoryNow().Add(-duration)
 			if dryRun {
-				count, err := history.CountBefore(ctx, cutoff)
+				count, err := history.CountBeforeReadOnly(ctx, cutoff)
 				if err != nil {
 					return err
 				}
