@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/keithah/plexctl/internal/config"
 	"github.com/keithah/plexctl/internal/plexauth"
@@ -879,9 +880,120 @@ func TestSharingRemoveRejectsInvalidInputWithoutRequest(t *testing.T) {
 	}
 }
 
+func TestSharingRemovedListsLocalHistoryNewestFirstWithoutPlexOrAuth(t *testing.T) {
+	historyPath := filepath.Join(t.TempDir(), "sharing-history.db")
+	t.Setenv("PLEXCTL_SHARING_HISTORY_DB", historyPath)
+	t.Setenv("PLEXCTL_CONFIG", filepath.Join(t.TempDir(), "missing-config.json"))
+	t.Setenv("PLEXCTL_TOKENS_FILE", filepath.Join(t.TempDir(), "missing-tokens.json"))
+	t.Setenv("PLEXCTL_TOKEN_ACCOUNT_ALICE", "poisoned-token")
+	history := sharinghistory.Open(historyPath)
+	olderEmail := "older@example.com"
+	newerEmail := "newer@example.com"
+	for _, record := range []sharinghistory.Record{
+		{RemovedAt: time.Date(2026, time.September, 4, 20, 0, 0, 0, time.UTC), PlexUserID: 1, Username: "older", Email: &olderEmail, ShareID: 101, ServerName: "Older Server", ServerClientIdentifier: "older-server", AllLibraries: true, LibrarySectionIDs: []int{9, 3}},
+		{RemovedAt: time.Date(2026, time.September, 4, 21, 0, 0, 0, time.UTC), PlexUserID: 2, Username: "newer", Email: &newerEmail, ShareID: 202, ServerName: "Newer Server", ServerClientIdentifier: "newer-server", Pending: true, LibrarySectionIDs: []int{8, 2}},
+	} {
+		if err := history.Append(t.Context(), record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldClient := sharingPlexClient
+	sharingPlexClient = func() *plexauth.Client { panic("sharing removed must not create a Plex client") }
+	t.Cleanup(func() { sharingPlexClient = oldClient })
+
+	var err error
+	out := captureStdout(t, func() { _, err = run(t, "sharing", "removed") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "2026-09-04T21:00:00Z	newer	newer@example.com	share_id=202	server=Newer Server	newer-server	all_libraries=false	pending=true	grants=2,8\n" +
+		"2026-09-04T20:00:00Z	older	older@example.com	share_id=101	server=Older Server	older-server	all_libraries=true	pending=false	grants=3,9\n"
+	if out != want {
+		t.Fatalf("table output=%q, want %q", out, want)
+	}
+	if strings.Contains(out, "poisoned-token") {
+		t.Fatalf("output leaked token: %q", out)
+	}
+}
+
+func TestSharingRemovedJSONUsesStableFieldsAndNewestFirst(t *testing.T) {
+	historyPath := filepath.Join(t.TempDir(), "sharing-history.db")
+	t.Setenv("PLEXCTL_SHARING_HISTORY_DB", historyPath)
+	history := sharinghistory.Open(historyPath)
+	for _, record := range []sharinghistory.Record{
+		{RemovedAt: time.Date(2026, time.September, 4, 20, 0, 0, 0, time.UTC), PlexUserID: 1, Username: "older", ShareID: 101, ServerName: "Older Server", ServerClientIdentifier: "older-server", AllLibraries: true, LibrarySectionIDs: []int{9, 3}},
+		{RemovedAt: time.Date(2026, time.September, 4, 21, 0, 0, 0, time.UTC), PlexUserID: 2, Username: "newer", ShareID: 202, ServerName: "Newer Server", ServerClientIdentifier: "newer-server", Pending: true, LibrarySectionIDs: []int{8, 2}},
+	} {
+		if err := history.Append(t.Context(), record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldClient := sharingPlexClient
+	sharingPlexClient = func() *plexauth.Client { panic("sharing removed must not create a Plex client") }
+	t.Cleanup(func() { sharingPlexClient = oldClient })
+
+	var err error
+	out := captureStdout(t, func() { _, err = run(t, "sharing", "removed", "--json") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	var records []struct {
+		RemovedAt              time.Time `json:"removed_at"`
+		PlexUserID             int64     `json:"plex_user_id"`
+		Username               string    `json:"username"`
+		ShareID                int64     `json:"share_id"`
+		ServerName             string    `json:"server_name"`
+		ServerClientIdentifier string    `json:"server_client_identifier"`
+		AllLibraries           bool      `json:"all_libraries"`
+		Pending                bool      `json:"pending"`
+		LibrarySectionIDs      []int     `json:"library_section_ids"`
+	}
+	if err := json.Unmarshal([]byte(out), &records); err != nil {
+		t.Fatalf("invalid JSON %q: %v", out, err)
+	}
+	if len(records) != 2 || records[0].Username != "newer" || records[0].ShareID != 202 || !reflect.DeepEqual(records[0].LibrarySectionIDs, []int{2, 8}) || records[1].Username != "older" || records[1].ShareID != 101 || !reflect.DeepEqual(records[1].LibrarySectionIDs, []int{3, 9}) {
+		t.Fatalf("records=%+v, want stable newest-first local history", records)
+	}
+	for _, field := range []string{"removed_at", "plex_user_id", "username", "share_id", "server_name", "server_client_identifier", "all_libraries", "pending", "library_section_ids"} {
+		if !strings.Contains(out, fmt.Sprintf("\"%s\"", field)) {
+			t.Fatalf("JSON=%s, missing stable field %q", out, field)
+		}
+	}
+}
+
+func TestSharingRemovedEmptyOrMissingHistorySucceedsWithoutPlexOrAuth(t *testing.T) {
+	for _, name := range []string{"missing", "empty"} {
+		t.Run(name, func(t *testing.T) {
+			historyPath := filepath.Join(t.TempDir(), "sharing-history.db")
+			t.Setenv("PLEXCTL_SHARING_HISTORY_DB", historyPath)
+			t.Setenv("PLEXCTL_CONFIG", filepath.Join(t.TempDir(), "missing-config.json"))
+			if name == "empty" {
+				if err := sharinghistory.Open(historyPath).Append(t.Context(), sharinghistory.Record{RemovedAt: time.Now(), PlexUserID: 1, Username: "temporary", ShareID: 1, ServerName: "server", ServerClientIdentifier: "server"}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := sharinghistory.Open(historyPath).PurgeBefore(t.Context(), time.Now().Add(time.Second)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			oldClient := sharingPlexClient
+			sharingPlexClient = func() *plexauth.Client { panic("sharing removed must not create a Plex client") }
+			t.Cleanup(func() { sharingPlexClient = oldClient })
+
+			var err error
+			out := captureStdout(t, func() { _, err = run(t, "sharing", "removed", "--json") })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.TrimSpace(out) != "[]" {
+				t.Fatalf("output=%q, want empty JSON list", out)
+			}
+		})
+	}
+}
+
 func TestSharingCommandsAreReadOnly(t *testing.T) {
 	root := NewRoot()
-	for _, path := range [][]string{{"sharing", "users"}, {"sharing", "libraries"}} {
+	for _, path := range [][]string{{"sharing", "users"}, {"sharing", "libraries"}, {"sharing", "removed"}} {
 		cmd, _, err := root.Find(path)
 		if err != nil || cmd.Name() != path[len(path)-1] {
 			t.Fatalf("%s registration: cmd=%v err=%v", strings.Join(path, " "), cmd, err)

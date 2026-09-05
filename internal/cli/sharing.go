@@ -44,10 +44,57 @@ type sharingUserOutput struct {
 	Shares   []sharingServerOutput `json:"shares"`
 }
 
+// sharingRemovedOutput is the CLI representation of a locally recorded
+// successful external-share revocation.
+type sharingRemovedOutput struct {
+	RemovedAt              time.Time `json:"removed_at"`
+	PlexUserID             int64     `json:"plex_user_id"`
+	Username               string    `json:"username"`
+	Email                  *string   `json:"email,omitempty"`
+	ShareID                int64     `json:"share_id"`
+	ServerName             string    `json:"server_name"`
+	ServerClientIdentifier string    `json:"server_client_identifier"`
+	AllLibraries           bool      `json:"all_libraries"`
+	Pending                bool      `json:"pending"`
+	LibrarySectionIDs      []int     `json:"library_section_ids"`
+}
+
 func sharingCmd(o *options) *cobra.Command {
 	cmd := &cobra.Command{Use: "sharing", Short: "Inspect Plex library sharing"}
-	cmd.AddCommand(sharingUsersCmd(o), sharingLibrariesCmd(o), sharingInviteCmd(o), sharingUpdateCmd(o), sharingRemoveCmd(o))
+	cmd.AddCommand(sharingUsersCmd(o), sharingLibrariesCmd(o), sharingInviteCmd(o), sharingUpdateCmd(o), sharingRemoveCmd(o), sharingRemovedCmd(o))
 	return cmd
+}
+
+func sharingRemovedCmd(o *options) *cobra.Command {
+	return &cobra.Command{Use: "removed", Short: "List locally recorded removed external shares", Args: cobra.NoArgs, RunE: func(*cobra.Command, []string) error {
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		records, err := sharinghistory.Open(sharinghistory.Path()).List(ctx)
+		if err != nil {
+			return err
+		}
+		out := make([]sharingRemovedOutput, 0, len(records))
+		for _, record := range records {
+			out = append(out, sharingRemovedOutput{
+				RemovedAt:              record.RemovedAt,
+				PlexUserID:             record.PlexUserID,
+				Username:               record.Username,
+				Email:                  record.Email,
+				ShareID:                record.ShareID,
+				ServerName:             record.ServerName,
+				ServerClientIdentifier: record.ServerClientIdentifier,
+				AllLibraries:           record.AllLibraries,
+				Pending:                record.Pending,
+				LibrarySectionIDs:      record.LibrarySectionIDs,
+			})
+		}
+		if o.jsonOut {
+			printValue(out, true)
+		} else {
+			printSharingRemoved(out)
+		}
+		return nil
+	}}
 }
 
 func sharingUsersCmd(o *options) *cobra.Command {
@@ -496,6 +543,23 @@ func printSharingUsers(users []sharingUserOutput) {
 
 func printSharingLibraries(libraries []sharingLibraryOutput) {
 	for _, library := range libraries {
-		fmt.Printf("%d\t%d\t%s\t%s\tshared=%t\n", library.ID, library.Key, library.Title, library.Type, library.Shared)
+		fmt.Printf("%d	%d	%s	%s	shared=%t\n", library.ID, library.Key, library.Title, library.Type, library.Shared)
+	}
+}
+
+func printSharingRemoved(records []sharingRemovedOutput) {
+	for _, record := range records {
+		email := ""
+		if record.Email != nil {
+			email = *record.Email
+		}
+		grants := make([]string, 0, len(record.LibrarySectionIDs))
+		for _, id := range record.LibrarySectionIDs {
+			grants = append(grants, strconv.Itoa(id))
+		}
+		fmt.Printf("%s	%s	%s	share_id=%d	server=%s	%s	all_libraries=%t	pending=%t	grants=%s\n",
+			record.RemovedAt.Format(time.RFC3339Nano), record.Username, email, record.ShareID,
+			record.ServerName, record.ServerClientIdentifier, record.AllLibraries, record.Pending,
+			strings.Join(grants, ","))
 	}
 }
