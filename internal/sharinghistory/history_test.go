@@ -1,6 +1,7 @@
 package sharinghistory
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -229,6 +230,97 @@ func TestPurgeBeforeHandlesLegacyRFC3339NanoTimestamp(t *testing.T) {
 	}
 	if len(remaining) != 0 {
 		t.Fatalf("List() returned %d records after purge, want 0", len(remaining))
+	}
+}
+
+func TestCountBeforeReadOnlyHandlesLegacyRFC3339NanoTimestamp(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "sharing-history.db")
+	history := Open(databasePath)
+	ctx := context.Background()
+
+	db, err := history.openDatabase()
+	if err != nil {
+		t.Fatalf("open history database: %v", err)
+	}
+	_, err = db.ExecContext(ctx, `INSERT INTO removed_external_shares (
+		removed_at, plex_user_id, username, email, share_id, server_name,
+		server_client_identifier, all_libraries, pending, library_section_ids
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"2026-09-04T12:00:00.49Z", 1, "legacy-before-cutoff", nil, 1,
+		"server", "server-id", 0, 0, "[]",
+	)
+	if closeErr := db.Close(); closeErr != nil {
+		t.Fatalf("close seeded history database: %v", closeErr)
+	}
+	if err != nil {
+		t.Fatalf("seed legacy history row: %v", err)
+	}
+	databaseBefore, err := os.ReadFile(databasePath)
+	if err != nil {
+		t.Fatalf("read seeded history database: %v", err)
+	}
+	infoBefore, err := os.Stat(databasePath)
+	if err != nil {
+		t.Fatalf("stat seeded history database: %v", err)
+	}
+	sidecarsBefore, err := filepath.Glob(databasePath + "-*")
+	if err != nil {
+		t.Fatalf("glob seeded history sidecars: %v", err)
+	}
+
+	cutoff := time.Date(2026, time.September, 4, 12, 0, 0, 495000000, time.UTC)
+	count, err := history.CountBeforeReadOnly(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("count before cutoff read-only: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("CountBeforeReadOnly() = %d, want 1 for legacy timestamp before cutoff", count)
+	}
+	databaseAfter, err := os.ReadFile(databasePath)
+	if err != nil {
+		t.Fatalf("read history database after read-only count: %v", err)
+	}
+	if !bytes.Equal(databaseAfter, databaseBefore) {
+		t.Fatal("read-only count changed history database contents")
+	}
+	infoAfter, err := os.Stat(databasePath)
+	if err != nil {
+		t.Fatalf("stat history database after read-only count: %v", err)
+	}
+	if infoAfter.Size() != infoBefore.Size() || !infoAfter.ModTime().Equal(infoBefore.ModTime()) || infoAfter.Mode() != infoBefore.Mode() {
+		t.Fatalf("history database metadata changed: before=%+v after=%+v", infoBefore, infoAfter)
+	}
+	sidecarsAfter, err := filepath.Glob(databasePath + "-*")
+	if err != nil {
+		t.Fatalf("glob history sidecars after read-only count: %v", err)
+	}
+	if !reflect.DeepEqual(sidecarsAfter, sidecarsBefore) {
+		t.Fatalf("history sidecars changed: before=%v after=%v", sidecarsBefore, sidecarsAfter)
+	}
+}
+
+func TestCountBeforeReadOnlyCountsFixedWidthTimestampsStrictlyBeforeCutoff(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "sharing-history.db")
+	history := Open(databasePath)
+	ctx := context.Background()
+	cutoff := time.Date(2026, time.September, 4, 12, 0, 0, 495000000, time.UTC)
+
+	for _, record := range []Record{
+		{RemovedAt: cutoff.Add(-time.Nanosecond)},
+		{RemovedAt: cutoff},
+		{RemovedAt: cutoff.Add(time.Nanosecond)},
+	} {
+		if err := history.Append(ctx, record); err != nil {
+			t.Fatalf("append record at %s: %v", record.RemovedAt, err)
+		}
+	}
+
+	count, err := history.CountBeforeReadOnly(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("count before cutoff read-only: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("CountBeforeReadOnly() = %d, want 1 strictly before cutoff", count)
 	}
 }
 

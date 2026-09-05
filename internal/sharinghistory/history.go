@@ -141,12 +141,28 @@ func (h *History) CountBeforeReadOnly(ctx context.Context, cutoff time.Time) (in
 	}
 	defer db.Close()
 
+	rows, err := db.QueryContext(ctx, `SELECT removed_at FROM removed_external_shares`)
+	if err != nil {
+		return 0, fmt.Errorf("query removal history timestamps: %w", err)
+	}
+	defer rows.Close()
+
 	var count int64
-	if err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM removed_external_shares WHERE removed_at < ?`,
-		formatTimestamp(cutoff),
-	).Scan(&count); err != nil {
-		return 0, fmt.Errorf("count removal history before cutoff: %w", err)
+	for rows.Next() {
+		var removedAt string
+		if err := rows.Scan(&removedAt); err != nil {
+			return 0, fmt.Errorf("scan removal timestamp: %w", err)
+		}
+		parsedRemovedAt, err := time.Parse(time.RFC3339Nano, removedAt)
+		if err != nil {
+			return 0, fmt.Errorf("parse removal timestamp: %w", err)
+		}
+		if parsedRemovedAt.Before(cutoff) {
+			count++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate removal history timestamps: %w", err)
 	}
 	return count, nil
 }
