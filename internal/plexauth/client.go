@@ -515,11 +515,12 @@ func resourceCandidates(resources []Resource) string {
 	return strings.Join(candidates, ", ")
 }
 
-// ValidateExternalOwnedShare proves a selected share is reported exactly once as
-// an owned share of a non-Home user on the selected server.
-func ValidateExternalOwnedShare(users []SharedUser, machineID string, shareID int) error {
+// FindExternalOwnedShare proves a selected share is reported exactly once as an
+// owned share of a non-Home user on the selected server, then returns its
+// precise user and share snapshots.
+func FindExternalOwnedShare(users []SharedUser, machineID string, shareID int) (SharedUser, SharedServer, error) {
 	if machineID == "" || shareID <= 0 {
-		return fmt.Errorf("selected share is not exactly one owned external share on the selected server")
+		return SharedUser{}, SharedServer{}, fmt.Errorf("selected share is not exactly one owned external share on the selected server")
 	}
 
 	var matchedUser SharedUser
@@ -536,9 +537,16 @@ func ValidateExternalOwnedShare(users []SharedUser, machineID string, shareID in
 		}
 	}
 	if matches != 1 || matchedUser.Home || !matchedShare.Owned || matchedShare.MachineIdentifier != machineID {
-		return fmt.Errorf("selected share is not exactly one owned external share on the selected server")
+		return SharedUser{}, SharedServer{}, fmt.Errorf("selected share is not exactly one owned external share on the selected server")
 	}
-	return nil
+	return matchedUser, matchedShare, nil
+}
+
+// ValidateExternalOwnedShare proves a selected share is reported exactly once as
+// an owned share of a non-Home user on the selected server.
+func ValidateExternalOwnedShare(users []SharedUser, machineID string, shareID int) error {
+	_, _, err := FindExternalOwnedShare(users, machineID, shareID)
+	return err
 }
 
 // ValidateLibraryIDs confirms each requested Plex.tv sharing-library ID exists

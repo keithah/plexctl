@@ -6,16 +6,20 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/keithah/plexctl/internal/authstore"
 	"github.com/keithah/plexctl/internal/config"
 	"github.com/keithah/plexctl/internal/plexauth"
+	"github.com/keithah/plexctl/internal/sharinghistory"
 	"github.com/spf13/cobra"
 )
 
 var sharingPlexClient = func() *plexauth.Client {
 	return plexauth.New("https://plex.tv", "plexctl", nil)
 }
+
+var sharingHistoryNow = time.Now
 
 type sharingLibraryOutput struct {
 	ID     int    `json:"id"`
@@ -42,9 +46,120 @@ type sharingUserOutput struct {
 	Shares   []sharingServerOutput `json:"shares"`
 }
 
+// sharingRemovedOutput is the CLI representation of a locally recorded
+// successful external-share revocation.
+type sharingRemovedOutput struct {
+	RemovedAt              time.Time `json:"removed_at"`
+	PlexUserID             int64     `json:"plex_user_id"`
+	Username               string    `json:"username"`
+	Email                  *string   `json:"email,omitempty"`
+	ShareID                int64     `json:"share_id"`
+	ServerName             string    `json:"server_name"`
+	ServerClientIdentifier string    `json:"server_client_identifier"`
+	AllLibraries           bool      `json:"all_libraries"`
+	Pending                bool      `json:"pending"`
+	LibrarySectionIDs      []int     `json:"library_section_ids"`
+}
+
 func sharingCmd(o *options) *cobra.Command {
 	cmd := &cobra.Command{Use: "sharing", Short: "Inspect Plex library sharing"}
-	cmd.AddCommand(sharingUsersCmd(o), sharingLibrariesCmd(o), sharingInviteCmd(o), sharingUpdateCmd(o), sharingRemoveCmd(o))
+	cmd.AddCommand(sharingUsersCmd(o), sharingLibrariesCmd(o), sharingInviteCmd(o), sharingUpdateCmd(o), sharingRemoveCmd(o), sharingRemovedCmd(o))
+	return cmd
+}
+
+func sharingRemovedCmd(o *options) *cobra.Command {
+	cmd := &cobra.Command{Use: "removed", Short: "List locally recorded removed external shares", Args: cobra.NoArgs, RunE: func(*cobra.Command, []string) error {
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		path, err := sharinghistory.Path()
+		if err != nil {
+			return err
+		}
+		records, err := sharinghistory.Open(path).List(ctx)
+		if err != nil {
+			return err
+		}
+		out := make([]sharingRemovedOutput, 0, len(records))
+		for _, record := range records {
+			out = append(out, sharingRemovedOutput{
+				RemovedAt:              record.RemovedAt,
+				PlexUserID:             record.PlexUserID,
+				Username:               record.Username,
+				Email:                  record.Email,
+				ShareID:                record.ShareID,
+				ServerName:             record.ServerName,
+				ServerClientIdentifier: record.ServerClientIdentifier,
+				AllLibraries:           record.AllLibraries,
+				Pending:                record.Pending,
+				LibrarySectionIDs:      record.LibrarySectionIDs,
+			})
+		}
+		if o.jsonOut {
+			printValue(out, true)
+		} else {
+			printSharingRemoved(out)
+		}
+		return nil
+	}}
+	cmd.AddCommand(sharingRemovedPurgeCmd(o))
+	return cmd
+}
+
+func sharingRemovedPurgeCmd(o *options) *cobra.Command {
+	var olderThan string
+	var yes bool
+	var dryRun bool
+	cmd := &cobra.Command{
+		Use:   "purge --older-than DURATION --yes [--dry-run]",
+		Short: "Purge aged locally recorded removed external shares",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if cmd.Flags().Changed("json") {
+				return fmt.Errorf("sharing removed purge does not support --json")
+			}
+			duration, err := time.ParseDuration(olderThan)
+			if err != nil || duration <= 0 {
+				return fmt.Errorf("--older-than must be a strictly positive Go duration (for example, 2160h)")
+			}
+			if !dryRun && !yes {
+				return fmt.Errorf("sharing removed purge requires explicit --yes confirmation")
+			}
+
+			ctx, cancel := commandContext(o)
+			defer cancel()
+			path, err := sharinghistory.Path()
+			if err != nil {
+				return err
+			}
+			history := sharinghistory.Open(path)
+			cutoff := sharingHistoryNow().Add(-duration)
+			if dryRun {
+				count, err := history.CountBeforeReadOnly(ctx, cutoff)
+				if err != nil {
+					return err
+				}
+				fmt.Printf("dry run: %d locally recorded removed share would be purged\n", count)
+				return nil
+			}
+			deleted, err := history.PurgeBefore(ctx, cutoff)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("purged %d locally recorded removed share\n", deleted)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&olderThan, "older-than", "", "purge records older than this Go duration (for example, 2160h)")
+	cmd.Flags().Bool("json", false, "")
+	_ = cmd.Flags().MarkHidden("json")
+	cmd.Flags().BoolVar(&yes, "yes", false, "confirm local history deletion")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "count matching local records without deleting them")
+	cmd.SetHelpFunc(func(c *cobra.Command, _ []string) {
+		fmt.Fprintf(c.OutOrStdout(), "%s\n\nUsage:\n  %s\n\nFlags:\n", c.Short, c.UseLine())
+		flags := c.Flags()
+		flags.SetOutput(c.OutOrStdout())
+		flags.PrintDefaults()
+	})
 	return cmd
 }
 
@@ -197,11 +312,38 @@ func sharingRemoveCmd(o *options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := plexauth.ValidateExternalOwnedShare(users, resource.ClientIdentifier, shareID); err != nil {
+			matchedUser, matchedShare, err := plexauth.FindExternalOwnedShare(users, resource.ClientIdentifier, shareID)
+			if err != nil {
+				return err
+			}
+			grants, err := plex.SharedServerSections(ctx, token, resource.ClientIdentifier, shareID)
+			if err != nil {
 				return err
 			}
 			if err := plex.RemoveShare(ctx, token, resource.ClientIdentifier, shareID); err != nil {
 				return err
+			}
+			grantIDs := make([]int, 0, len(grants))
+			for _, grant := range grants {
+				grantIDs = append(grantIDs, grant.ID)
+			}
+			historyPath, err := sharinghistory.Path()
+			if err != nil {
+				return fmt.Errorf("Plex share revocation succeeded but local history path resolution failed: %w", err)
+			}
+			if err := sharinghistory.Open(historyPath).Append(ctx, sharinghistory.Record{
+				RemovedAt:              time.Now(),
+				PlexUserID:             int64(matchedUser.ID),
+				Username:               matchedUser.Username,
+				Email:                  matchedUser.Email,
+				ShareID:                int64(matchedShare.ID),
+				ServerName:             resource.Name,
+				ServerClientIdentifier: resource.ClientIdentifier,
+				AllLibraries:           matchedShare.AllLibraries,
+				Pending:                matchedShare.Pending,
+				LibrarySectionIDs:      grantIDs,
+			}); err != nil {
+				return fmt.Errorf("Plex share revocation succeeded but local history recording failed: %w", err)
 			}
 			fmt.Printf("REVOKED share %d on server %s (%s)\n", shareID, resource.Name, resource.ClientIdentifier)
 			return nil
@@ -471,6 +613,23 @@ func printSharingUsers(users []sharingUserOutput) {
 
 func printSharingLibraries(libraries []sharingLibraryOutput) {
 	for _, library := range libraries {
-		fmt.Printf("%d\t%d\t%s\t%s\tshared=%t\n", library.ID, library.Key, library.Title, library.Type, library.Shared)
+		fmt.Printf("%d	%d	%s	%s	shared=%t\n", library.ID, library.Key, library.Title, library.Type, library.Shared)
+	}
+}
+
+func printSharingRemoved(records []sharingRemovedOutput) {
+	for _, record := range records {
+		email := ""
+		if record.Email != nil {
+			email = *record.Email
+		}
+		grants := make([]string, 0, len(record.LibrarySectionIDs))
+		for _, id := range record.LibrarySectionIDs {
+			grants = append(grants, strconv.Itoa(id))
+		}
+		fmt.Printf("%s	%s	%s	share_id=%d	server=%s	%s	all_libraries=%t	pending=%t	grants=%s\n",
+			record.RemovedAt.Format(time.RFC3339Nano), record.Username, email, record.ShareID,
+			record.ServerName, record.ServerClientIdentifier, record.AllLibraries, record.Pending,
+			strings.Join(grants, ","))
 	}
 }
