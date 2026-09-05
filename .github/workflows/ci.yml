@@ -15,6 +15,6 @@ jobs:
       - run: test -z "$(gofmt -l cmd internal)"
       - run: go test ./...
       - run: go vet ./...
-      - run: go build ./cmd/plexctl
       - run: python3 scripts/check-secrets.py
+      - run: go build ./cmd/plexctl
       - run: python3 scripts/check-api-coverage.py
