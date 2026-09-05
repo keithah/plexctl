@@ -76,6 +76,7 @@ managed users are excluded.
 - `sharing update SHARE_ID --server SERVER_ID (--libraries ID,ID | --all-libraries) [--dry-run]` — **replaces** the share's complete library-grant set; it never merges the existing grants.
 - `sharing remove SHARE_ID --server SERVER_ID --yes [--dry-run]` — revoke exactly one external server share. `--yes` is mandatory; dry-run never contacts Plex.
 - `sharing removed [--json]` — list locally recorded successful share revocations, newest first. It never contacts Plex or loads credentials; only revocations completed successfully after this release appear.
+- `sharing removed purge --older-than DURATION --yes [--dry-run]` — permanently delete locally recorded revocations strictly older than the duration. Use Go duration syntax such as `2160h` (not `d`); `--yes` is required for deletion. Dry-run prints the local match count and does not modify history. Purge never contacts Plex or loads credentials.
 
 Sharing mutations use the stored protected account credential and fresh Plex.tv
 resource discovery. They do not accept token flags. `--dry-run` is a local

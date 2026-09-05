@@ -19,6 +19,8 @@ var sharingPlexClient = func() *plexauth.Client {
 	return plexauth.New("https://plex.tv", "plexctl", nil)
 }
 
+var sharingHistoryNow = time.Now
+
 type sharingLibraryOutput struct {
 	ID     int    `json:"id"`
 	Key    int    `json:"key"`
@@ -66,7 +68,7 @@ func sharingCmd(o *options) *cobra.Command {
 }
 
 func sharingRemovedCmd(o *options) *cobra.Command {
-	return &cobra.Command{Use: "removed", Short: "List locally recorded removed external shares", Args: cobra.NoArgs, RunE: func(*cobra.Command, []string) error {
+	cmd := &cobra.Command{Use: "removed", Short: "List locally recorded removed external shares", Args: cobra.NoArgs, RunE: func(*cobra.Command, []string) error {
 		ctx, cancel := commandContext(o)
 		defer cancel()
 		records, err := sharinghistory.Open(sharinghistory.Path()).List(ctx)
@@ -95,6 +97,59 @@ func sharingRemovedCmd(o *options) *cobra.Command {
 		}
 		return nil
 	}}
+	cmd.AddCommand(sharingRemovedPurgeCmd(o))
+	return cmd
+}
+
+func sharingRemovedPurgeCmd(o *options) *cobra.Command {
+	var olderThan string
+	var yes bool
+	var dryRun bool
+	cmd := &cobra.Command{
+		Use:   "purge --older-than DURATION --yes [--dry-run]",
+		Short: "Purge aged locally recorded removed external shares",
+		Args:  cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			duration, err := time.ParseDuration(olderThan)
+			if err != nil || duration <= 0 {
+				return fmt.Errorf("--older-than must be a strictly positive Go duration (for example, 2160h)")
+			}
+			if !dryRun && !yes {
+				return fmt.Errorf("sharing removed purge requires explicit --yes confirmation")
+			}
+
+			ctx, cancel := commandContext(o)
+			defer cancel()
+			history := sharinghistory.Open(sharinghistory.Path())
+			cutoff := sharingHistoryNow().Add(-duration)
+			if dryRun {
+				count, err := history.CountBefore(ctx, cutoff)
+				if err != nil {
+					return err
+				}
+				fmt.Printf("dry run: %d locally recorded removed share would be purged\n", count)
+				return nil
+			}
+			deleted, err := history.PurgeBefore(ctx, cutoff)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("purged %d locally recorded removed share\n", deleted)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&olderThan, "older-than", "", "purge records older than this Go duration (for example, 2160h)")
+	cmd.Flags().Bool("json", false, "")
+	_ = cmd.Flags().MarkHidden("json")
+	cmd.Flags().BoolVar(&yes, "yes", false, "confirm local history deletion")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "count matching local records without deleting them")
+	cmd.SetHelpFunc(func(c *cobra.Command, _ []string) {
+		fmt.Fprintf(c.OutOrStdout(), "%s\n\nUsage:\n  %s\n\nFlags:\n", c.Short, c.UseLine())
+		flags := c.Flags()
+		flags.SetOutput(c.OutOrStdout())
+		flags.PrintDefaults()
+	})
+	return cmd
 }
 
 func sharingUsersCmd(o *options) *cobra.Command {
