@@ -28,8 +28,8 @@ func TestSummarizeViewsGroupsByAccountAndSection(t *testing.T) {
 			},
 			want: []Summary{
 				{ViewCount: 1, FirstViewedAt: first, LastViewedAt: first},
-				{AccountID: "a1", AccountTitle: "A", SectionID: "s1", SectionTitle: "Films", ViewCount: 2, FirstViewedAt: first, LastViewedAt: third, TotalDuration: tenMinutes},
-				{AccountID: "a2", AccountTitle: "B", SectionID: "s1", SectionTitle: "Films", ViewCount: 1, FirstViewedAt: second, LastViewedAt: second, TotalDuration: fiveMinutes},
+				{AccountID: "a1", AccountTitle: "A", SectionID: "s1", SectionTitle: "Films", ViewCount: 2, FirstViewedAt: first, LastViewedAt: third, TotalDuration: durationPtr(tenMinutes)},
+				{AccountID: "a2", AccountTitle: "B", SectionID: "s1", SectionTitle: "Films", ViewCount: 1, FirstViewedAt: second, LastViewedAt: second, TotalDuration: durationPtr(fiveMinutes)},
 			},
 		},
 	} {
@@ -41,6 +41,23 @@ func TestSummarizeViewsGroupsByAccountAndSection(t *testing.T) {
 	}
 }
 
+func TestSummarizeViewsPreservesDurationPresence(t *testing.T) {
+	viewedAt := time.Date(2026, time.September, 1, 12, 0, 0, 0, time.UTC)
+	zero := time.Duration(0)
+
+	got := SummarizeViews([]View{
+		{AccountID: "absent", ViewedAt: viewedAt},
+		{AccountID: "present-zero", ViewedAt: viewedAt, Duration: &zero},
+	})
+	want := []Summary{
+		{AccountID: "absent", ViewCount: 1, FirstViewedAt: viewedAt, LastViewedAt: viewedAt},
+		{AccountID: "present-zero", ViewCount: 1, FirstViewedAt: viewedAt, LastViewedAt: viewedAt, TotalDuration: durationPtr(0)},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("SummarizeViews() = %#v, want %#v", got, want)
+	}
+}
+
 func TestUnwatchedExcludesEveryHistoryRatingKey(t *testing.T) {
 	for _, test := range []struct {
 		name  string
@@ -49,7 +66,7 @@ func TestUnwatchedExcludesEveryHistoryRatingKey(t *testing.T) {
 		want  []LibraryItem
 	}{
 		{
-			name: "uses stable keys and skips ineligible items",
+			name: "uses stable keys for every media type",
 			items: []LibraryItem{
 				{RatingKey: "unwatched-b", Title: "Beta", SectionID: "2", SectionTitle: "TV", MediaType: "episode"},
 				{RatingKey: "watched", Title: "Already watched", SectionID: "1", SectionTitle: "Films", MediaType: "movie"},
@@ -64,7 +81,9 @@ func TestUnwatchedExcludesEveryHistoryRatingKey(t *testing.T) {
 				{RatingKey: ""},
 			},
 			want: []LibraryItem{
+				{RatingKey: "container", Title: "A container", SectionID: "1", SectionTitle: "Films", MediaType: "directory"},
 				{RatingKey: "unwatched-a", Title: "Alpha", SectionID: "1", SectionTitle: "Films", MediaType: "movie"},
+				{RatingKey: "unknown", Title: "Unknown", SectionID: "1", SectionTitle: "Films", MediaType: "unknown"},
 				{RatingKey: "unwatched-b", Title: "Beta", SectionID: "2", SectionTitle: "TV", MediaType: "episode"},
 			},
 		},
@@ -75,6 +94,25 @@ func TestUnwatchedExcludesEveryHistoryRatingKey(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestItemAnalysisAcceptsStableKeyAlbums(t *testing.T) {
+	cutoff := time.Date(2026, time.September, 5, 12, 0, 0, 0, time.UTC)
+	album := LibraryItem{RatingKey: "album", Title: "Album", SectionID: "1", SectionTitle: "Music", MediaType: "album"}
+
+	t.Run("unwatched", func(t *testing.T) {
+		if got := UnwatchedItems([]LibraryItem{album}, nil); !reflect.DeepEqual(got, []LibraryItem{album}) {
+			t.Fatalf("UnwatchedItems() = %#v, want %#v", got, []LibraryItem{album})
+		}
+	})
+
+	t.Run("inactive", func(t *testing.T) {
+		lastViewedAt := cutoff.Add(-time.Hour)
+		want := []InactiveItem{{LibraryItem: album, LastViewedAt: lastViewedAt}}
+		if got := InactiveItems([]LibraryItem{album}, []View{{RatingKey: album.RatingKey, ViewedAt: lastViewedAt}}, cutoff); !reflect.DeepEqual(got, want) {
+			t.Fatalf("InactiveItems() = %#v, want %#v", got, want)
+		}
+	})
 }
 
 func TestInactiveUsesStrictCutoffAndExcludesNeverViewed(t *testing.T) {
@@ -136,4 +174,8 @@ func TestNormalizeAndSortViews(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("NormalizeViews() = %#v, want %#v", got, want)
 	}
+}
+
+func durationPtr(value time.Duration) *time.Duration {
+	return &value
 }

@@ -36,20 +36,20 @@ type View struct {
 	Duration         *time.Duration
 }
 
-// InactiveItem is an eligible library item whose latest view precedes a cutoff.
+// InactiveItem is a library item whose latest view precedes a cutoff.
 type InactiveItem struct {
 	LibraryItem
 	LastViewedAt time.Time
 }
 
-// InactiveItems returns eligible items with a recorded latest view strictly
+// InactiveItems returns stable-key items with a recorded latest view strictly
 // before cutoff. Items with no matching nonempty rating key are excluded.
 func InactiveItems(items []LibraryItem, views []View, cutoff time.Time) []InactiveItem {
 	latest := latestViewedAtByRatingKey(views)
 	cutoff = cutoff.UTC()
 	inactive := make([]InactiveItem, 0, len(items))
 	for _, item := range items {
-		if !eligibleItem(item) {
+		if item.RatingKey == "" {
 			continue
 		}
 		lastViewedAt, ok := latest[item.RatingKey]
@@ -100,7 +100,7 @@ type LibraryItem struct {
 	MediaType    string
 }
 
-// UnwatchedItems returns eligible items that have no nonempty matching history
+// UnwatchedItems returns stable-key items that have no nonempty matching history
 // rating key, ordered by section title, item title, and rating key.
 func UnwatchedItems(items []LibraryItem, views []View) []LibraryItem {
 	viewed := make(map[string]struct{}, len(views))
@@ -112,7 +112,7 @@ func UnwatchedItems(items []LibraryItem, views []View) []LibraryItem {
 
 	unwatched := make([]LibraryItem, 0, len(items))
 	for _, item := range items {
-		if !eligibleItem(item) {
+		if item.RatingKey == "" {
 			continue
 		}
 		if _, ok := viewed[item.RatingKey]; !ok {
@@ -121,18 +121,6 @@ func UnwatchedItems(items []LibraryItem, views []View) []LibraryItem {
 	}
 	sortLibraryItems(unwatched)
 	return unwatched
-}
-
-func eligibleItem(item LibraryItem) bool {
-	if item.RatingKey == "" {
-		return false
-	}
-	switch item.MediaType {
-	case "movie", "episode", "track", "clip", "photo":
-		return true
-	default:
-		return false
-	}
 }
 
 func sortLibraryItems(items []LibraryItem) {
@@ -163,7 +151,8 @@ type Summary struct {
 	ViewCount     int
 	FirstViewedAt time.Time
 	LastViewedAt  time.Time
-	TotalDuration time.Duration
+	// TotalDuration is nil when no view in the group supplied a duration.
+	TotalDuration *time.Duration
 }
 
 // SummarizeViews groups views by account and section and returns composite-key
@@ -195,7 +184,11 @@ func SummarizeViews(views []View) []Summary {
 			summary.LastViewedAt = viewedAt
 		}
 		if view.Duration != nil {
-			summary.TotalDuration += *view.Duration
+			totalDuration := *view.Duration
+			if summary.TotalDuration != nil {
+				totalDuration += *summary.TotalDuration
+			}
+			summary.TotalDuration = &totalDuration
 		}
 		groups[key] = summary
 	}
