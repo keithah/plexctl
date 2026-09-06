@@ -725,7 +725,7 @@ func historyCmd(o *options) *cobra.Command {
 		if section != "" {
 			query.Set("librarySectionID", section)
 		}
-		history, err := client.History(ctx, query)
+		history, err := client.HistoryAll(ctx, query)
 		if err != nil {
 			return fmt.Errorf("read watch history: %w", err)
 		}

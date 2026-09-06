@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -81,7 +82,7 @@ func TestHistoryExportUsesOnlyHistoryGETAndAppendsCSV(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		fmt.Fprint(w, `{"MediaContainer":{"size":2,"Metadata":[{"ratingKey":"2","title":"Beta","type":"movie","viewedAt":1700000000,"duration":60000},{"ratingKey":"1","title":"Alpha","type":"movie","viewedAt":1600000000}]}}`)
+		fmt.Fprint(w, `{"MediaContainer":{"size":2,"totalSize":2,"Metadata":[{"ratingKey":"2","title":"Beta","type":"movie","viewedAt":1700000000,"duration":60000},{"ratingKey":"1","title":"Alpha","type":"movie","viewedAt":1600000000}]}}`)
 	})
 	defer server.Close()
 	historyReportConfig(t, server.URL)
@@ -116,7 +117,7 @@ func TestHistorySummaryUsesOnlyHistoryGETAndStableTable(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		fmt.Fprint(w, `{"MediaContainer":{"size":2,"Metadata":[{"ratingKey":"2","title":"Beta","viewedAt":1700000000,"librarySectionID":"2","librarySectionTitle":"TV","accountID":2,"accountTitle":"B"},{"ratingKey":"1","title":"Alpha","viewedAt":1600000000,"librarySectionID":"1","librarySectionTitle":"Films","accountID":1,"accountTitle":"A"}]}}`)
+		fmt.Fprint(w, `{"MediaContainer":{"size":2,"totalSize":2,"Metadata":[{"ratingKey":"2","title":"Beta","viewedAt":1700000000,"librarySectionID":"2","librarySectionTitle":"TV","accountID":2,"accountTitle":"B"},{"ratingKey":"1","title":"Alpha","viewedAt":1600000000,"librarySectionID":"1","librarySectionTitle":"Films","accountID":1,"accountTitle":"A"}]}}`)
 	})
 	defer server.Close()
 	historyReportConfig(t, server.URL)
@@ -134,11 +135,46 @@ func TestHistorySummaryUsesOnlyHistoryGETAndStableTable(t *testing.T) {
 	}
 }
 
+func TestHistoryReportPaginatesPlaybackHistory(t *testing.T) {
+	var starts []string
+	server, _ := historyReportServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status/sessions/history/all" {
+			http.NotFound(w, r)
+			return
+		}
+		starts = append(starts, r.URL.Query().Get("X-Plex-Container-Start"))
+		switch r.URL.Query().Get("X-Plex-Container-Start") {
+		case "0":
+			fmt.Fprint(w, `{"MediaContainer":{"size":2,"offset":0,"totalSize":3,"Metadata":[{"ratingKey":"2","viewedAt":1700000000},{"ratingKey":"1","viewedAt":1600000000}]}}`)
+		case "2":
+			fmt.Fprint(w, `{"MediaContainer":{"size":1,"offset":2,"totalSize":3,"Metadata":[{"ratingKey":"3","viewedAt":1800000000}]}}`)
+		default:
+			http.Error(w, "unexpected page", http.StatusBadRequest)
+		}
+	})
+	defer server.Close()
+	historyReportConfig(t, server.URL)
+
+	stdout, err := captureHistoryReportStdout(t, func() error {
+		_, err := run(t, "history", "report", "--mode", "summary")
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout, "\t3\t2020-09-13T12:26:40Z\t2027-01-15T08:00:00Z\t") {
+		t.Fatalf("summary = %q, want all three history pages", stdout)
+	}
+	if !reflect.DeepEqual(starts, []string{"0", "2"}) {
+		t.Fatalf("history page starts = %v", starts)
+	}
+}
+
 func TestHistoryUnwatchedUsesOnlySectionAndItemGETs(t *testing.T) {
 	server, _ := historyReportServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/status/sessions/history/all":
-			fmt.Fprint(w, `{"MediaContainer":{"size":1,"Metadata":[{"ratingKey":"watched","viewedAt":1700000000}]}}`)
+			fmt.Fprint(w, `{"MediaContainer":{"size":1,"totalSize":1,"Metadata":[{"ratingKey":"watched","viewedAt":1700000000}]}}`)
 		case "/library/sections/all":
 			fmt.Fprint(w, `{"MediaContainer":{"size":1,"Directory":[{"key":"7","title":"Films","type":"movie"}]}}`)
 		case "/library/sections/7/all":
@@ -170,11 +206,11 @@ func TestHistoryInactiveUsesStrictCutoff(t *testing.T) {
 	server, _ := historyReportServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/status/sessions/history/all":
-			fmt.Fprint(w, `{"MediaContainer":{"size":2,"Metadata":[{"ratingKey":"old","viewedAt":1699992799},{"ratingKey":"equal","viewedAt":1699992800}]}}`)
+			fmt.Fprint(w, `{"MediaContainer":{"size":2,"totalSize":2,"Metadata":[{"ratingKey":"old","viewedAt":1699992799},{"ratingKey":"equal","viewedAt":1699992800}]}}`)
 		case "/library/sections/all":
 			fmt.Fprint(w, `{"MediaContainer":{"size":1,"Directory":[{"key":"7","title":"Films"}]}}`)
 		case "/library/sections/7/all":
-			fmt.Fprint(w, `{"MediaContainer":{"size":3,"totalSize":3,"Metadata":[{"ratingKey":"equal","title":"Equal"},{"ratingKey":"old","title":"Old"},{"ratingKey":"never","title":"Never"}]}}`)
+			fmt.Fprint(w, `{"MediaContainer":{"size":3,"totalSize":3,"Metadata":[{"ratingKey":"equal","title":"Equal","type":"movie"},{"ratingKey":"old","title":"Old","type":"movie"},{"ratingKey":"never","title":"Never","type":"movie"}]}}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -189,7 +225,7 @@ func TestHistoryInactiveUsesStrictCutoff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "rating_key\ttitle\tsection_id\tsection_title\tmedia_type\tlast_viewed_at\nold\tOld\t7\tFilms\t\t2023-11-14T20:13:19Z\n"
+	want := "rating_key\ttitle\tsection_id\tsection_title\tmedia_type\tlast_viewed_at\nold\tOld\t7\tFilms\tmovie\t2023-11-14T20:13:19Z\n"
 	if stdout != want {
 		t.Fatalf("inactive = %q, want %q", stdout, want)
 	}

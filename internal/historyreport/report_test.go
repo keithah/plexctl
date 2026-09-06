@@ -66,7 +66,7 @@ func TestUnwatchedExcludesEveryHistoryRatingKey(t *testing.T) {
 		want  []LibraryItem
 	}{
 		{
-			name: "uses stable keys for every media type",
+			name: "uses stable keys for normal media items only",
 			items: []LibraryItem{
 				{RatingKey: "unwatched-b", Title: "Beta", SectionID: "2", SectionTitle: "TV", MediaType: "episode"},
 				{RatingKey: "watched", Title: "Already watched", SectionID: "1", SectionTitle: "Films", MediaType: "movie"},
@@ -81,9 +81,7 @@ func TestUnwatchedExcludesEveryHistoryRatingKey(t *testing.T) {
 				{RatingKey: ""},
 			},
 			want: []LibraryItem{
-				{RatingKey: "container", Title: "A container", SectionID: "1", SectionTitle: "Films", MediaType: "directory"},
 				{RatingKey: "unwatched-a", Title: "Alpha", SectionID: "1", SectionTitle: "Films", MediaType: "movie"},
-				{RatingKey: "unknown", Title: "Unknown", SectionID: "1", SectionTitle: "Films", MediaType: "unknown"},
 				{RatingKey: "unwatched-b", Title: "Beta", SectionID: "2", SectionTitle: "TV", MediaType: "episode"},
 			},
 		},
@@ -96,7 +94,7 @@ func TestUnwatchedExcludesEveryHistoryRatingKey(t *testing.T) {
 	}
 }
 
-func TestItemAnalysisAcceptsStableKeyAlbums(t *testing.T) {
+func TestItemAnalysisAcceptsNormalMediaTypes(t *testing.T) {
 	cutoff := time.Date(2026, time.September, 5, 12, 0, 0, 0, time.UTC)
 	album := LibraryItem{RatingKey: "album", Title: "Album", SectionID: "1", SectionTitle: "Music", MediaType: "album"}
 
@@ -113,6 +111,29 @@ func TestItemAnalysisAcceptsStableKeyAlbums(t *testing.T) {
 			t.Fatalf("InactiveItems() = %#v, want %#v", got, want)
 		}
 	})
+}
+
+func TestItemAnalysisSkipsContainersAndUnknownTypes(t *testing.T) {
+	cutoff := time.Date(2026, time.September, 5, 12, 0, 0, 0, time.UTC)
+	items := []LibraryItem{
+		{RatingKey: "directory", Title: "Directory", MediaType: "directory"},
+		{RatingKey: "collection", Title: "Collection", MediaType: "collection"},
+		{RatingKey: "unknown", Title: "Unknown", MediaType: "unknown"},
+		{RatingKey: "empty", Title: "Empty", MediaType: ""},
+	}
+	views := []View{
+		{RatingKey: "directory", ViewedAt: cutoff.Add(-time.Hour)},
+		{RatingKey: "collection", ViewedAt: cutoff.Add(-time.Hour)},
+		{RatingKey: "unknown", ViewedAt: cutoff.Add(-time.Hour)},
+		{RatingKey: "empty", ViewedAt: cutoff.Add(-time.Hour)},
+	}
+
+	if got := UnwatchedItems(items, nil); len(got) != 0 {
+		t.Fatalf("UnwatchedItems() = %#v, want no ineligible items", got)
+	}
+	if got := InactiveItems(items, views, cutoff); len(got) != 0 {
+		t.Fatalf("InactiveItems() = %#v, want no ineligible items", got)
+	}
 }
 
 func TestInactiveUsesStrictCutoffAndExcludesNeverViewed(t *testing.T) {

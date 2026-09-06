@@ -49,7 +49,7 @@ func InactiveItems(items []LibraryItem, views []View, cutoff time.Time) []Inacti
 	cutoff = cutoff.UTC()
 	inactive := make([]InactiveItem, 0, len(items))
 	for _, item := range items {
-		if item.RatingKey == "" {
+		if !isEligibleMediaItem(item) {
 			continue
 		}
 		lastViewedAt, ok := latest[item.RatingKey]
@@ -100,6 +100,18 @@ type LibraryItem struct {
 	MediaType    string
 }
 
+func isEligibleMediaItem(item LibraryItem) bool {
+	if item.RatingKey == "" {
+		return false
+	}
+	switch item.MediaType {
+	case "movie", "show", "season", "episode", "artist", "album", "track", "photo":
+		return true
+	default:
+		return false
+	}
+}
+
 // UnwatchedItems returns stable-key items that have no nonempty matching history
 // rating key, ordered by section title, item title, and rating key.
 func UnwatchedItems(items []LibraryItem, views []View) []LibraryItem {
@@ -112,7 +124,7 @@ func UnwatchedItems(items []LibraryItem, views []View) []LibraryItem {
 
 	unwatched := make([]LibraryItem, 0, len(items))
 	for _, item := range items {
-		if item.RatingKey == "" {
+		if !isEligibleMediaItem(item) {
 			continue
 		}
 		if _, ok := viewed[item.RatingKey]; !ok {

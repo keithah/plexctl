@@ -38,6 +38,63 @@ func TestHistoryReportMetadataDecoding(t *testing.T) {
 	}
 }
 
+func TestHistoryAllFetchesEveryPage(t *testing.T) {
+	var starts []string
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/status/sessions/history/all" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		starts = append(starts, r.URL.Query().Get("X-Plex-Container-Start"))
+		switch r.URL.Query().Get("X-Plex-Container-Start") {
+		case "0":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"size":2,"offset":0,"totalSize":3,"Metadata":[{"ratingKey":"2"},{"ratingKey":"1"}]}}`))
+		case "2":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"size":1,"offset":2,"totalSize":3,"Metadata":[{"ratingKey":"3"}]}}`))
+		default:
+			http.Error(w, "unexpected page", http.StatusBadRequest)
+		}
+	}))
+	defer s.Close()
+
+	a, err := api.New(s.URL, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	history, err := New(a).HistoryAll(context.Background(), url.Values{"accountID": {"7"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []string{history.MediaContainer.Metadata[0].RatingKey, history.MediaContainer.Metadata[1].RatingKey, history.MediaContainer.Metadata[2].RatingKey}; !reflect.DeepEqual(got, []string{"2", "1", "3"}) {
+		t.Fatalf("history order = %v", got)
+	}
+	if !reflect.DeepEqual(starts, []string{"0", "2"}) {
+		t.Fatalf("page starts = %v", starts)
+	}
+}
+
+func TestHistoryAllRejectsIncompletePagingMetadata(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{"declared size mismatch", `{"MediaContainer":{"size":2,"offset":0,"totalSize":2,"Metadata":[{"ratingKey":"1"}]}}`, "declared size 2"},
+		{"no progress", `{"MediaContainer":{"size":0,"offset":0,"totalSize":1,"Metadata":[]}}`, "no progress"},
+		{"missing total", `{"MediaContainer":{"size":1,"offset":0,"Metadata":[{"ratingKey":"1"}]}}`, "invalid total size"},
+		{"unexpected offset", `{"MediaContainer":{"size":1,"offset":1,"totalSize":1,"Metadata":[{"ratingKey":"1"}]}}`, "unexpected offset"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c, _, done := recorder(t, test.body)
+			defer done()
+
+			_, err := c.HistoryAll(context.Background(), nil)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestListSectionItemsPagesWithEscapedKey(t *testing.T) {
 	var requests []string
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
