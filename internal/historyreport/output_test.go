@@ -98,23 +98,20 @@ func TestJSONLExportAppendsOneValidObjectPerLine(t *testing.T) {
 		t.Fatalf("second Export() error = %v", err)
 	}
 
-	data, err := os.ReadFile(path)
-	if err != nil {
+	assertJSONLLines(t, path, 2)
+}
+
+func TestJSONLExportSeparatesBatchFromExistingObjectWithoutTrailingNewline(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.jsonl")
+	if err := os.WriteFile(path, []byte(`{"rating_key":"existing","title":"Existing"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	lines := bytes.Split(bytes.TrimSuffix(data, []byte("\n")), []byte("\n"))
-	if len(lines) != 2 {
-		t.Fatalf("JSONL line count = %d, want 2: %q", len(lines), data)
+
+	if err := Export(path, []View{exportTestView()}); err != nil {
+		t.Fatalf("Export() error = %v", err)
 	}
-	for i, line := range lines {
-		var got map[string]any
-		if err := json.Unmarshal(line, &got); err != nil {
-			t.Fatalf("line %d is not a JSON object: %v", i+1, err)
-		}
-		if got["rating_key"] == "" {
-			t.Fatalf("line %d has no rating_key: %#v", i+1, got)
-		}
-	}
+
+	assertJSONLLines(t, path, 2)
 }
 
 func TestEmptyExportDoesNotCreateFile(t *testing.T) {
@@ -180,6 +177,27 @@ func exportTestView() View {
 		AccountTitle:     "Viewer",
 		ViewedAt:         time.Date(2026, time.September, 5, 12, 0, 0, 0, time.UTC),
 		Duration:         &duration,
+	}
+}
+
+func assertJSONLLines(t *testing.T, path string, wantCount int) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := bytes.Split(bytes.TrimSuffix(data, []byte("\n")), []byte("\n"))
+	if len(lines) != wantCount {
+		t.Fatalf("JSONL line count = %d, want %d: %q", len(lines), wantCount, data)
+	}
+	for i, line := range lines {
+		var got map[string]any
+		if err := json.Unmarshal(line, &got); err != nil {
+			t.Fatalf("line %d is not a JSON object: %v", i+1, err)
+		}
+		if got["rating_key"] == "" {
+			t.Fatalf("line %d has no rating_key: %#v", i+1, got)
+		}
 	}
 }
 

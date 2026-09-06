@@ -37,6 +37,15 @@ func Export(path string, views []View) error {
 		batch, err = renderCSV(views, existingSize > 0)
 	case jsonlExtension:
 		batch, err = renderJSONL(views)
+		if err == nil && existingSize > 0 {
+			needsSeparator, separatorErr := outputNeedsJSONLSeparator(path, existingSize)
+			if separatorErr != nil {
+				return separatorErr
+			}
+			if needsSeparator {
+				batch = append([]byte{'\n'}, batch...)
+			}
+		}
 	}
 	if err != nil {
 		return err
@@ -76,6 +85,20 @@ func outputSize(path string) (int64, error) {
 		return 0, nil
 	}
 	return 0, fmt.Errorf("stat export output: %w", err)
+}
+
+func outputNeedsJSONLSeparator(path string, size int64) (bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return false, fmt.Errorf("open export output for newline check: %w", err)
+	}
+	defer file.Close()
+
+	var lastByte [1]byte
+	if _, err := file.ReadAt(lastByte[:], size-1); err != nil {
+		return false, fmt.Errorf("read export output for newline check: %w", err)
+	}
+	return lastByte[0] != '\n', nil
 }
 
 func renderCSV(views []View, hasContent bool) ([]byte, error) {
