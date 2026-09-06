@@ -62,6 +62,67 @@ func (c *Client) Items(ctx context.Context, key string, q url.Values) (MetadataC
 	return v, e
 }
 
+const sectionItemsPageSize = 100
+
+// ListSectionItems returns all metadata items in a library section using
+// documented container paging. It leaves Items available for legacy callers
+// that need to control the request query themselves.
+func (c *Client) ListSectionItems(ctx context.Context, key string) (MetadataContainer, error) {
+	var items MetadataContainer
+	var totalSize = -1
+	for start := 0; ; {
+		q := url.Values{}
+		q.Set("X-Plex-Container-Start", strconv.Itoa(start))
+		q.Set("X-Plex-Container-Size", strconv.Itoa(sectionItemsPageSize))
+		page, err := c.Items(ctx, key, q)
+		if err != nil {
+			return MetadataContainer{}, fmt.Errorf("list section %s at offset %d: %w", key, start, err)
+		}
+
+		container := page.MediaContainer
+		decodedSize := len(container.Metadata)
+		if container.Size != decodedSize {
+			return MetadataContainer{}, fmt.Errorf("list section %s at offset %d: declared size %d but decoded %d metadata items", key, start, container.Size, decodedSize)
+		}
+		if !container.offsetSet {
+			return MetadataContainer{}, fmt.Errorf("list section %s at offset %d: missing offset", key, start)
+		}
+		if container.Offset != start {
+			return MetadataContainer{}, fmt.Errorf("list section %s: unexpected offset %d, want %d", key, container.Offset, start)
+		}
+		if !container.totalSizeSet {
+			return MetadataContainer{}, fmt.Errorf("list section %s at offset %d: missing total size", key, start)
+		}
+		if container.TotalSize < start+container.Size {
+			return MetadataContainer{}, fmt.Errorf("list section %s at offset %d: invalid total size %d for page size %d", key, start, container.TotalSize, container.Size)
+		}
+		if totalSize == -1 {
+			totalSize = container.TotalSize
+		} else if container.TotalSize < totalSize {
+			return MetadataContainer{}, fmt.Errorf("list section %s: total size decreased from %d to %d", key, totalSize, container.TotalSize)
+		} else {
+			totalSize = container.TotalSize
+		}
+		if container.Size == 0 {
+			if start == container.TotalSize {
+				return items, nil
+			}
+			return MetadataContainer{}, fmt.Errorf("list section %s: no progress at offset %d", key, start)
+		}
+
+		items.MediaContainer.Metadata = append(items.MediaContainer.Metadata, container.Metadata...)
+		items.MediaContainer.Size = len(items.MediaContainer.Metadata)
+		items.MediaContainer.TotalSize = container.TotalSize
+		start += container.Size
+		if start == container.TotalSize {
+			return items, nil
+		}
+		if start > container.TotalSize {
+			return MetadataContainer{}, fmt.Errorf("list section %s: offset %d exceeds total size %d", key, start, container.TotalSize)
+		}
+	}
+}
+
 // Search uses the documented /hubs/search operation. sectionKey is optional;
 // when empty the search covers every library the token can see.
 func (c *Client) Search(ctx context.Context, sectionKey, term string, limit int) (SearchContainer, error) {
@@ -172,6 +233,66 @@ func (c *Client) History(ctx context.Context, q url.Values) (MetadataContainer, 
 	var v MetadataContainer
 	e := c.API.Do(ctx, "GET", "/status/sessions/history/all", q, nil, &v)
 	return v, e
+}
+
+const historyPageSize = 100
+
+// HistoryAll returns complete playback history for reporting. It uses documented
+// container paging and refuses responses whose metadata cannot prove completeness.
+func (c *Client) HistoryAll(ctx context.Context, q url.Values) (MetadataContainer, error) {
+	var history MetadataContainer
+	var totalSize = -1
+	for start := 0; ; {
+		pageQuery := cloneValues(q)
+		pageQuery.Set("X-Plex-Container-Start", strconv.Itoa(start))
+		pageQuery.Set("X-Plex-Container-Size", strconv.Itoa(historyPageSize))
+		page, err := c.History(ctx, pageQuery)
+		if err != nil {
+			return MetadataContainer{}, fmt.Errorf("list playback history at offset %d: %w", start, err)
+		}
+
+		container := page.MediaContainer
+		decodedSize := len(container.Metadata)
+		if container.Size != decodedSize {
+			return MetadataContainer{}, fmt.Errorf("list playback history at offset %d: declared size %d but decoded %d metadata items", start, container.Size, decodedSize)
+		}
+		if !container.offsetSet {
+			return MetadataContainer{}, fmt.Errorf("list playback history at offset %d: missing offset", start)
+		}
+		if container.Offset != start {
+			return MetadataContainer{}, fmt.Errorf("list playback history: unexpected offset %d, want %d", container.Offset, start)
+		}
+		if !container.totalSizeSet {
+			return MetadataContainer{}, fmt.Errorf("list playback history at offset %d: missing total size", start)
+		}
+		if container.TotalSize < start+container.Size {
+			return MetadataContainer{}, fmt.Errorf("list playback history at offset %d: invalid total size %d for page size %d", start, container.TotalSize, container.Size)
+		}
+		if totalSize == -1 {
+			totalSize = container.TotalSize
+		} else if container.TotalSize < totalSize {
+			return MetadataContainer{}, fmt.Errorf("list playback history: total size decreased from %d to %d", totalSize, container.TotalSize)
+		} else {
+			totalSize = container.TotalSize
+		}
+		if container.Size == 0 {
+			if start == container.TotalSize {
+				return history, nil
+			}
+			return MetadataContainer{}, fmt.Errorf("list playback history: no progress at offset %d", start)
+		}
+
+		history.MediaContainer.Metadata = append(history.MediaContainer.Metadata, container.Metadata...)
+		history.MediaContainer.Size = len(history.MediaContainer.Metadata)
+		history.MediaContainer.TotalSize = container.TotalSize
+		start += container.Size
+		if start == container.TotalSize {
+			return history, nil
+		}
+		if start > container.TotalSize {
+			return MetadataContainer{}, fmt.Errorf("list playback history: offset %d exceeds total size %d", start, container.TotalSize)
+		}
+	}
 }
 func (c *Client) DownloadQueue(ctx context.Context, id string) (DownloadQueueContainer, error) {
 	var v DownloadQueueContainer

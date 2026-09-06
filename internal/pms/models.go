@@ -1,5 +1,7 @@
 package pms
 
+import "encoding/json"
+
 type SearchContainer struct {
 	MediaContainer struct {
 		Size int   `json:"size"`
@@ -78,22 +80,61 @@ type Directory struct {
 	Scanner string `json:"scanner"`
 }
 type MetadataContainer struct {
-	MediaContainer struct {
-		Size     int        `json:"size"`
-		Metadata []Metadata `json:"Metadata"`
-	} `json:"MediaContainer"`
+	MediaContainer metadataMediaContainer `json:"MediaContainer"`
 }
+
+type metadataMediaContainer struct {
+	Size         int `json:"size"`
+	Offset       int `json:"offset"`
+	TotalSize    int `json:"totalSize"`
+	offsetSet    bool
+	totalSizeSet bool
+	Metadata     []Metadata `json:"Metadata"`
+}
+
+func (m *metadataMediaContainer) UnmarshalJSON(data []byte) error {
+	var decoded struct {
+		Size      int        `json:"size"`
+		Offset    *int       `json:"offset"`
+		TotalSize *int       `json:"totalSize"`
+		Metadata  []Metadata `json:"Metadata"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	m.Size = decoded.Size
+	m.offsetSet = decoded.Offset != nil
+	if m.offsetSet {
+		m.Offset = *decoded.Offset
+	} else {
+		m.Offset = 0
+	}
+	m.Metadata = decoded.Metadata
+	m.totalSizeSet = decoded.TotalSize != nil
+	if m.totalSizeSet {
+		m.TotalSize = *decoded.TotalSize
+	} else {
+		m.TotalSize = 0
+	}
+	return nil
+}
+
 type Metadata struct {
-	RatingKey        string  `json:"ratingKey"`
-	Key              string  `json:"key"`
-	Type             string  `json:"type"`
-	Title            string  `json:"title"`
-	GrandparentTitle string  `json:"grandparentTitle"`
-	ParentTitle      string  `json:"parentTitle"`
-	Year             int     `json:"year"`
-	Duration         int64   `json:"duration"`
-	ViewOffset       int64   `json:"viewOffset"`
-	Media            []Media `json:"Media"`
+	RatingKey           string  `json:"ratingKey"`
+	Key                 string  `json:"key"`
+	Type                string  `json:"type"`
+	Title               string  `json:"title"`
+	GrandparentTitle    string  `json:"grandparentTitle"`
+	ParentTitle         string  `json:"parentTitle"`
+	Year                int     `json:"year"`
+	Duration            *int64  `json:"duration"`
+	ViewedAt            *int64  `json:"viewedAt"`
+	LibrarySectionID    string  `json:"librarySectionID"`
+	LibrarySectionTitle string  `json:"librarySectionTitle"`
+	AccountID           int64   `json:"accountID"`
+	AccountTitle        string  `json:"accountTitle"`
+	ViewOffset          int64   `json:"viewOffset"`
+	Media               []Media `json:"Media"`
 }
 type Media struct {
 	Part []Part `json:"Part"`

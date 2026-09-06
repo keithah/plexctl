@@ -58,10 +58,43 @@ normal certificate verification.
 - `transcode subtitles TYPE SESSION_ID [--param key=value]` — query universal subtitle handling.
 - `sessions list` — list active sessions.
 - `sessions history [--account-id ID] [--section-id ID] [--sort EXPR] [--viewed-at TIME] [--metadata-id ID]` — playback history.
+- `history report --mode MODE [--section KEY] [--account-id ID] [--older-than DURATION] [--output FILE]` — analyze watch history without changing Plex.
 `health ping` — bounded identity liveness check.
 `health check` — identity plus library-access check with bounded media-byte verification (Range bytes=0-1024, download=1).
 `serve --listen ADDR` — local HTTP adapter for Uptime Kuma (`GET /plex/<account>/<server>` → 200/503 JSON with classification; binds to `3003` by convention).
 - `api GET /path` — read-only access to any PMS endpoint.
+
+### Watch-history reports
+
+`history report` has four read-only modes. It supports `--section KEY` to restrict
+history (and library-item modes) to one exact library section key, and
+`--account-id ID` to restrict the fetched history to one Plex account. The report
+command does not support `--json`.
+
+```bash
+plexctl history report --mode export --output history.csv
+plexctl history report --mode export --output history.jsonl
+plexctl history report --mode summary
+plexctl history report --mode unwatched --section 1
+plexctl history report --mode inactive --older-than 2160h
+```
+
+- `export` writes normalized view records to `--output`; `--output` is required
+  for this mode and is not available to other modes. `.csv` and `.jsonl` outputs
+  append to an existing file; `.csv` adds its header only for a new or empty file.
+  A `.json` output is intentionally rejected rather than treated as JSON Lines.
+- `summary` prints deterministic per-account and per-library-section view totals,
+  first/last view times, and total duration.
+- `unwatched` lists library items with no matching view-history record. It is
+  distinct from `inactive`: an item that was watched long ago is not unwatched.
+- `inactive` lists only library items whose most recent recorded view is strictly
+  older than `--older-than`; the duration must be positive Go duration syntax
+  (for example, `2160h`). Items with no recorded view are not inactive.
+
+View-history exports can contain sensitive local viewing data. Store output files
+appropriately. All report modes issue only PMS read requests (GET) and never
+mutate Plex; the only write an export performs is appending the requested local
+`.csv` or `.jsonl` file.
 
 ### External Plex sharing
 

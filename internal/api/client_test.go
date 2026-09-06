@@ -3,9 +3,12 @@ package api
 import (
 	"context"
 	"crypto/tls"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -48,6 +51,37 @@ func TestHTTPErrorDoesNotExposeToken(t *testing.T) {
 	if e == nil || strings.Contains(e.Error(), "secret") {
 		t.Fatalf("unsafe error: %v", e)
 	}
+	var httpErr *HTTPError
+	if !errors.As(e, &httpErr) || httpErr.StatusCode != http.StatusUnauthorized || httpErr.Method != http.MethodGet || httpErr.Path != "/identity" {
+		t.Fatalf("HTTPError classification = %#v", httpErr)
+	}
+}
+
+func TestTransportErrorRedactsPMSBaseURLAndToken(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseURL := "http://" + listener.Addr().String() + "/private-pms"
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := New(baseURL, "super-secret-token", &http.Client{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.Do(context.Background(), http.MethodGet, "/identity", nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected unreachable PMS transport error")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "GET /identity") {
+		t.Fatalf("error = %q, want method and path context", message)
+	}
+	if strings.Contains(message, baseURL) || strings.Contains(message, "super-secret-token") {
+		t.Fatalf("unsafe transport error: %q", message)
+	}
 }
 
 // A self-signed TLS server must fail by default and succeed only when the
@@ -85,12 +119,35 @@ func TestInsecureTLSIsHonored(t *testing.T) {
 	var _ = tls.Config{}
 }
 
+func TestExpectedClientDisconnect(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "broken pipe", err: syscall.EPIPE, want: true},
+		{name: "connection reset", err: syscall.ECONNRESET, want: true},
+		{name: "unrelated write error", err: errors.New("disk full"), want: false},
+		{name: "context deadline", err: context.DeadlineExceeded, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := expectedClientDisconnect(tc.err); got != tc.want {
+				t.Errorf("expectedClientDisconnect(%v) = %t, want %t", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+func expectedClientDisconnect(err error) bool {
+	return errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET)
+}
+
 // An oversized body must fail loudly instead of being silently truncated into
 // a confusing "unexpected end of JSON input" decode error.
 func TestOversizedResponseIsReportedNotTruncated(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if _, err := w.Write([]byte(`{"title":"` + strings.Repeat("x", 3<<20) + `"}`)); err != nil {
+		if _, err := w.Write([]byte(`{"title":"` + strings.Repeat("x", 3<<20) + `"}`)); err != nil && !expectedClientDisconnect(err) {
 			t.Errorf("write response: %v", err)
 		}
 	}))
