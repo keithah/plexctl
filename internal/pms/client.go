@@ -79,6 +79,10 @@ func (c *Client) ListSectionItems(ctx context.Context, key string) (MetadataCont
 		}
 
 		pageSize := page.MediaContainer.Size
+		decodedSize := len(page.MediaContainer.Metadata)
+		if pageSize != decodedSize {
+			return MetadataContainer{}, fmt.Errorf("list section %s at offset %d: declared size %d but decoded %d metadata items", key, start, pageSize, decodedSize)
+		}
 		if pageSize == 0 && page.MediaContainer.TotalSize <= start {
 			return items, nil
 		}

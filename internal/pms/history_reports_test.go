@@ -96,6 +96,16 @@ func TestListSectionItemsRejectsPageWithoutProgress(t *testing.T) {
 	}
 }
 
+func TestListSectionItemsRejectsDeclaredSizeWithoutDecodedMetadata(t *testing.T) {
+	c, _, done := recorder(t, `{"MediaContainer":{"size":2,"totalSize":2,"Metadata":[{"ratingKey":"1","title":"Only item"}]}}`)
+	defer done()
+
+	_, err := c.ListSectionItems(context.Background(), "7")
+	if err == nil || !strings.Contains(err.Error(), "section 7") || !strings.Contains(err.Error(), "declared size 2") || !strings.Contains(err.Error(), "decoded 1") {
+		t.Fatalf("error = %v, want contextual declared-size mismatch error", err)
+	}
+}
+
 func TestItemsRemainsCallerControlled(t *testing.T) {
 	c, paths, done := recorder(t, `{"MediaContainer":{"size":0,"Metadata":[]}}`)
 	defer done()
