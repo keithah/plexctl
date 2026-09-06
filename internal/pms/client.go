@@ -62,6 +62,42 @@ func (c *Client) Items(ctx context.Context, key string, q url.Values) (MetadataC
 	return v, e
 }
 
+const sectionItemsPageSize = 100
+
+// ListSectionItems returns all metadata items in a library section using
+// documented container paging. It leaves Items available for legacy callers
+// that need to control the request query themselves.
+func (c *Client) ListSectionItems(ctx context.Context, key string) (MetadataContainer, error) {
+	var items MetadataContainer
+	for start := 0; ; {
+		q := url.Values{}
+		q.Set("X-Plex-Container-Start", strconv.Itoa(start))
+		q.Set("X-Plex-Container-Size", strconv.Itoa(sectionItemsPageSize))
+		page, err := c.Items(ctx, key, q)
+		if err != nil {
+			return MetadataContainer{}, fmt.Errorf("list section %s at offset %d: %w", key, start, err)
+		}
+
+		pageSize := page.MediaContainer.Size
+		if pageSize == 0 && page.MediaContainer.TotalSize <= start {
+			return items, nil
+		}
+		if pageSize <= 0 {
+			return MetadataContainer{}, fmt.Errorf("list section %s: no progress at offset %d", key, start)
+		}
+		items.MediaContainer.Metadata = append(items.MediaContainer.Metadata, page.MediaContainer.Metadata...)
+		items.MediaContainer.Size = len(items.MediaContainer.Metadata)
+		items.MediaContainer.TotalSize = page.MediaContainer.TotalSize
+		start += pageSize
+		if page.MediaContainer.TotalSize > 0 && start >= page.MediaContainer.TotalSize {
+			return items, nil
+		}
+		if page.MediaContainer.TotalSize == 0 && pageSize < sectionItemsPageSize {
+			return items, nil
+		}
+	}
+}
+
 // Search uses the documented /hubs/search operation. sectionKey is optional;
 // when empty the search covers every library the token can see.
 func (c *Client) Search(ctx context.Context, sectionKey, term string, limit int) (SearchContainer, error) {
