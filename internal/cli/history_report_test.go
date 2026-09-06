@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -71,7 +72,7 @@ func TestHistoryReportRejectsValidationBeforePMSRequest(t *testing.T) {
 			}
 		})
 	}
-	if got := *requests; got != 0 {
+	if got := requests.Load(); got != 0 {
 		t.Fatalf("validation made %d PMS requests", got)
 	}
 }
@@ -233,16 +234,20 @@ func TestHistoryInactiveUsesStrictCutoff(t *testing.T) {
 
 const historyReportToken = "history-report-token-sentinel"
 
-func historyReportServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *int) {
+func historyReportServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
-	requests := new(int)
+	requests := new(atomic.Int32)
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		*requests = *requests + 1
+		requests.Add(1)
 		if r.Method != http.MethodGet {
-			t.Fatalf("PMS method = %s, want GET", r.Method)
+			t.Errorf("PMS method = %s, want GET", r.Method)
+			http.Error(w, "PMS method must be GET", http.StatusMethodNotAllowed)
+			return
 		}
 		if got := r.Header.Get("X-Plex-Token"); got != historyReportToken {
-			t.Fatalf("PMS token = %q", got)
+			t.Errorf("PMS token = %q", got)
+			http.Error(w, "invalid PMS token", http.StatusUnauthorized)
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if handler != nil {
