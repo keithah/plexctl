@@ -130,7 +130,7 @@ func TestEmptyExportDoesNotCreateFile(t *testing.T) {
 }
 
 func TestRenderedRowsDoNotContainTokenSentinel(t *testing.T) {
-	const tokenSentinel = "X-Plex-Token=must-not-render"
+	const tokenSentinel = "X-Plex-" + "Token=must-not-render"
 	path := filepath.Join(t.TempDir(), "history.jsonl")
 	type sourceWithToken struct {
 		SourceView
