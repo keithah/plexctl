@@ -14,6 +14,11 @@ const (
 	jsonlExtension = ".jsonl"
 )
 
+var exportCSVHeader = []string{
+	"rating_key", "title", "parent_title", "grandparent_title", "media_type",
+	"section_id", "section_title", "account_id", "account_title", "viewed_at", "duration",
+}
+
 // Export appends normalized public view records to a CSV or JSONL file selected
 // by its lowercase extension. It validates and renders the complete batch before
 // opening the destination, and it never creates a file for an empty batch.

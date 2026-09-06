@@ -12,6 +12,7 @@ import (
 	"github.com/keithah/plexctl/internal/config"
 	"github.com/keithah/plexctl/internal/connectioncache"
 	"github.com/keithah/plexctl/internal/health"
+	"github.com/keithah/plexctl/internal/historyreport"
 	"github.com/keithah/plexctl/internal/monitor"
 	"github.com/keithah/plexctl/internal/plexauth"
 	"github.com/keithah/plexctl/internal/pms"
@@ -23,6 +24,7 @@ import (
 	"os/exec"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -39,7 +41,7 @@ func NewRoot() *cobra.Command {
 	root.PersistentFlags().StringVar(&o.server, "server", "", "configured server name")
 	root.PersistentFlags().BoolVar(&o.jsonOut, "json", false, "print JSON")
 	root.PersistentFlags().DurationVar(&o.timeout, "timeout", o.timeout, "request timeout")
-	root.AddCommand(configCmd(), authCmd(), accountsCmd(), serversCmd(), serverCmd(o), libraryCmd(o), metadataCmd(o), sessionsCmd(o), playlistsCmd(o), collectionsCmd(o), queuesCmd(o), transcodeCmd(o), healthCmd(o), serveCmd(o), sharingCmd(o), apiCmd(o))
+	root.AddCommand(configCmd(), authCmd(), accountsCmd(), serversCmd(), serverCmd(o), libraryCmd(o), metadataCmd(o), sessionsCmd(o), historyCmd(o), playlistsCmd(o), collectionsCmd(o), queuesCmd(o), transcodeCmd(o), healthCmd(o), serveCmd(o), sharingCmd(o), apiCmd(o))
 	return root
 }
 func Execute() {
@@ -695,6 +697,176 @@ func sessionsCmd(o *options) *cobra.Command {
 	cmd.AddCommand(history)
 	return cmd
 }
+
+// historyReportNow is a command-local seam for deterministic inactive cutoffs.
+var historyReportNow = time.Now
+
+func historyCmd(o *options) *cobra.Command {
+	var mode, section, accountID, olderThan, output string
+	cmd := &cobra.Command{Use: "history", Short: "Analyze Plex watch history"}
+	report := &cobra.Command{Use: "report", Short: "Generate a read-only watch-history report", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		if cmd.Flags().Changed("json") {
+			return errors.New("history report does not support --json")
+		}
+		if err := validateHistoryReport(mode, olderThan, output); err != nil {
+			return err
+		}
+
+		client, err := configured(o)
+		if err != nil {
+			return fmt.Errorf("configure history report: %w", err)
+		}
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		query := url.Values{}
+		if accountID != "" {
+			query.Set("accountID", accountID)
+		}
+		if section != "" {
+			query.Set("librarySectionID", section)
+		}
+		history, err := client.History(ctx, query)
+		if err != nil {
+			return fmt.Errorf("read watch history: %w", err)
+		}
+		views := historyReportViews(history.MediaContainer.Metadata)
+
+		switch mode {
+		case "export":
+			if err := historyreport.Export(output, views); err != nil {
+				return fmt.Errorf("write history export: %w", err)
+			}
+			return nil
+		case "summary":
+			printHistorySummaries(historyreport.SummarizeViews(views))
+			return nil
+		}
+
+		sections, err := client.Sections(ctx)
+		if err != nil {
+			return fmt.Errorf("list library sections: %w", err)
+		}
+		items, err := historyReportItems(ctx, client, sections.MediaContainer.Directory, section)
+		if err != nil {
+			return err
+		}
+		if mode == "unwatched" {
+			printHistoryItems(historyreport.UnwatchedItems(items, views))
+			return nil
+		}
+		duration, _ := time.ParseDuration(olderThan)
+		printInactiveHistoryItems(historyreport.InactiveItems(items, views, historyReportNow().Add(-duration)))
+		return nil
+	}}
+	report.Flags().StringVar(&mode, "mode", "", "report mode: export, summary, unwatched, or inactive")
+	report.Flags().StringVar(&section, "section", "", "restrict to an exact library section key")
+	report.Flags().StringVar(&accountID, "account-id", "", "filter by Plex account ID")
+	report.Flags().StringVar(&olderThan, "older-than", "", "inactive cutoff duration")
+	report.Flags().StringVar(&output, "output", "", "append export to .csv or .jsonl")
+	cmd.AddCommand(report)
+	return cmd
+}
+
+func validateHistoryReport(mode, olderThan, output string) error {
+	switch mode {
+	case "export", "summary", "unwatched", "inactive":
+	default:
+		return fmt.Errorf("--mode must be one of export, summary, unwatched, or inactive")
+	}
+	if mode == "export" && output == "" {
+		return errors.New("--output is required for --mode export")
+	}
+	if mode != "export" && output != "" {
+		return errors.New("--output is supported only for --mode export")
+	}
+	if output != "" && !strings.HasSuffix(output, ".csv") && !strings.HasSuffix(output, ".jsonl") {
+		return fmt.Errorf("unsupported export output extension for %q: use .csv or .jsonl", output)
+	}
+	if olderThan != "" && mode != "inactive" {
+		return errors.New("--older-than is supported only for --mode inactive")
+	}
+	if mode == "inactive" {
+		duration, err := time.ParseDuration(olderThan)
+		if err != nil || duration <= 0 {
+			return errors.New("--older-than must be a positive duration for --mode inactive")
+		}
+	}
+	return nil
+}
+
+func historyReportViews(metadata []pms.Metadata) []historyreport.View {
+	source := make([]historyreport.SourceView, 0, len(metadata))
+	for _, item := range metadata {
+		value := historyreport.SourceView{RatingKey: item.RatingKey, Title: item.Title, ParentTitle: item.ParentTitle, GrandparentTitle: item.GrandparentTitle, MediaType: item.Type, SectionID: item.LibrarySectionID, SectionTitle: item.LibrarySectionTitle, AccountTitle: item.AccountTitle}
+		if item.AccountID != 0 {
+			value.AccountID = strconv.FormatInt(item.AccountID, 10)
+		}
+		if item.ViewedAt != nil {
+			value.ViewedAt = time.Unix(*item.ViewedAt, 0).UTC()
+		}
+		if item.Duration != nil {
+			duration := time.Duration(*item.Duration) * time.Millisecond
+			value.Duration = &duration
+		}
+		source = append(source, value)
+	}
+	return historyreport.NormalizeViews(source)
+}
+
+func historyReportItems(ctx context.Context, client *pms.Client, sections []pms.Directory, selected string) ([]historyreport.LibraryItem, error) {
+	var result []historyreport.LibraryItem
+	found := selected == ""
+	for _, section := range sections {
+		if selected != "" && section.Key != selected {
+			continue
+		}
+		found = true
+		page, err := client.ListSectionItems(ctx, section.Key)
+		if err != nil {
+			return nil, fmt.Errorf("list items in section %q: %w", section.Key, err)
+		}
+		for _, item := range page.MediaContainer.Metadata {
+			result = append(result, historyreport.LibraryItem{RatingKey: item.RatingKey, Title: item.Title, SectionID: section.Key, SectionTitle: section.Title, MediaType: item.Type})
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("library section %q was not found", selected)
+	}
+	return result, nil
+}
+
+func printHistorySummaries(rows []historyreport.Summary) {
+	fmt.Println("account_id	account_title	section_id	section_title	view_count	first_viewed_at	last_viewed_at	total_duration")
+	for _, row := range rows {
+		duration := ""
+		if row.TotalDuration != nil {
+			duration = row.TotalDuration.String()
+		}
+		fmt.Printf("%s	%s	%s	%s	%d	%s	%s	%s\n", row.AccountID, row.AccountTitle, row.SectionID, row.SectionTitle, row.ViewCount, historyReportTime(row.FirstViewedAt), historyReportTime(row.LastViewedAt), duration)
+	}
+}
+
+func printHistoryItems(rows []historyreport.LibraryItem) {
+	fmt.Println("rating_key	title	section_id	section_title	media_type")
+	for _, row := range rows {
+		fmt.Printf("%s	%s	%s	%s	%s\n", row.RatingKey, row.Title, row.SectionID, row.SectionTitle, row.MediaType)
+	}
+}
+
+func printInactiveHistoryItems(rows []historyreport.InactiveItem) {
+	fmt.Println("rating_key	title	section_id	section_title	media_type	last_viewed_at")
+	for _, row := range rows {
+		fmt.Printf("%s	%s	%s	%s	%s	%s\n", row.RatingKey, row.Title, row.SectionID, row.SectionTitle, row.MediaType, historyReportTime(row.LastViewedAt))
+	}
+}
+
+func historyReportTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339)
+}
+
 func playlistsCmd(o *options) *cobra.Command {
 	cmd := &cobra.Command{Use: "playlists"}
 	cmd.AddCommand(&cobra.Command{Use: "list", Short: "List playlists", RunE: func(*cobra.Command, []string) error {

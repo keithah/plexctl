@@ -158,11 +158,6 @@ func TestRenderedRowsDoNotContainTokenSentinel(t *testing.T) {
 	}
 }
 
-var exportCSVHeader = []string{
-	"rating_key", "title", "parent_title", "grandparent_title", "media_type",
-	"section_id", "section_title", "account_id", "account_title", "viewed_at", "duration",
-}
-
 func exportTestView() View {
 	duration := 42 * time.Minute
 	return View{
