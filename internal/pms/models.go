@@ -87,6 +87,7 @@ type metadataMediaContainer struct {
 	Size         int `json:"size"`
 	Offset       int `json:"offset"`
 	TotalSize    int `json:"totalSize"`
+	offsetSet    bool
 	totalSizeSet bool
 	Metadata     []Metadata `json:"Metadata"`
 }
@@ -94,7 +95,7 @@ type metadataMediaContainer struct {
 func (m *metadataMediaContainer) UnmarshalJSON(data []byte) error {
 	var decoded struct {
 		Size      int        `json:"size"`
-		Offset    int        `json:"offset"`
+		Offset    *int       `json:"offset"`
 		TotalSize *int       `json:"totalSize"`
 		Metadata  []Metadata `json:"Metadata"`
 	}
@@ -102,7 +103,12 @@ func (m *metadataMediaContainer) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	m.Size = decoded.Size
-	m.Offset = decoded.Offset
+	m.offsetSet = decoded.Offset != nil
+	if m.offsetSet {
+		m.Offset = *decoded.Offset
+	} else {
+		m.Offset = 0
+	}
 	m.Metadata = decoded.Metadata
 	m.totalSizeSet = decoded.TotalSize != nil
 	if m.totalSizeSet {

@@ -42,14 +42,14 @@ func Export(path string, views []View) error {
 		batch, err = renderCSV(views, existingSize > 0)
 	case jsonlExtension:
 		batch, err = renderJSONL(views)
-		if err == nil && existingSize > 0 {
-			needsSeparator, separatorErr := outputNeedsJSONLSeparator(path, existingSize)
-			if separatorErr != nil {
-				return separatorErr
-			}
-			if needsSeparator {
-				batch = append([]byte{'\n'}, batch...)
-			}
+	}
+	if err == nil && existingSize > 0 {
+		needsSeparator, separatorErr := outputNeedsSeparator(path, existingSize)
+		if separatorErr != nil {
+			return separatorErr
+		}
+		if needsSeparator {
+			batch = append([]byte{'\n'}, batch...)
 		}
 	}
 	if err != nil {
@@ -92,7 +92,7 @@ func outputSize(path string) (int64, error) {
 	return 0, fmt.Errorf("stat export output: %w", err)
 }
 
-func outputNeedsJSONLSeparator(path string, size int64) (bool, error) {
+func outputNeedsSeparator(path string, size int64) (bool, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return false, fmt.Errorf("open export output for newline check: %w", err)

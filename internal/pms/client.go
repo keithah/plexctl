@@ -84,6 +84,9 @@ func (c *Client) ListSectionItems(ctx context.Context, key string) (MetadataCont
 		if container.Size != decodedSize {
 			return MetadataContainer{}, fmt.Errorf("list section %s at offset %d: declared size %d but decoded %d metadata items", key, start, container.Size, decodedSize)
 		}
+		if !container.offsetSet {
+			return MetadataContainer{}, fmt.Errorf("list section %s at offset %d: missing offset", key, start)
+		}
 		if container.Offset != start {
 			return MetadataContainer{}, fmt.Errorf("list section %s: unexpected offset %d, want %d", key, container.Offset, start)
 		}
@@ -95,8 +98,10 @@ func (c *Client) ListSectionItems(ctx context.Context, key string) (MetadataCont
 		}
 		if totalSize == -1 {
 			totalSize = container.TotalSize
-		} else if container.TotalSize != totalSize {
-			return MetadataContainer{}, fmt.Errorf("list section %s: total size changed from %d to %d", key, totalSize, container.TotalSize)
+		} else if container.TotalSize < totalSize {
+			return MetadataContainer{}, fmt.Errorf("list section %s: total size decreased from %d to %d", key, totalSize, container.TotalSize)
+		} else {
+			totalSize = container.TotalSize
 		}
 		if container.Size == 0 {
 			if start == container.TotalSize {
@@ -251,6 +256,9 @@ func (c *Client) HistoryAll(ctx context.Context, q url.Values) (MetadataContaine
 		if container.Size != decodedSize {
 			return MetadataContainer{}, fmt.Errorf("list playback history at offset %d: declared size %d but decoded %d metadata items", start, container.Size, decodedSize)
 		}
+		if !container.offsetSet {
+			return MetadataContainer{}, fmt.Errorf("list playback history at offset %d: missing offset", start)
+		}
 		if container.Offset != start {
 			return MetadataContainer{}, fmt.Errorf("list playback history: unexpected offset %d, want %d", container.Offset, start)
 		}
@@ -262,8 +270,10 @@ func (c *Client) HistoryAll(ctx context.Context, q url.Values) (MetadataContaine
 		}
 		if totalSize == -1 {
 			totalSize = container.TotalSize
-		} else if container.TotalSize != totalSize {
-			return MetadataContainer{}, fmt.Errorf("list playback history: total size changed from %d to %d", totalSize, container.TotalSize)
+		} else if container.TotalSize < totalSize {
+			return MetadataContainer{}, fmt.Errorf("list playback history: total size decreased from %d to %d", totalSize, container.TotalSize)
+		} else {
+			totalSize = container.TotalSize
 		}
 		if container.Size == 0 {
 			if start == container.TotalSize {

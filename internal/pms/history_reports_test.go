@@ -95,6 +95,16 @@ func TestHistoryAllAcceptsExplicitEmptyTotalSize(t *testing.T) {
 	}
 }
 
+func TestHistoryAllRejectsMissingOffset(t *testing.T) {
+	c, _, done := recorder(t, `{"MediaContainer":{"size":1,"totalSize":1,"Metadata":[{"ratingKey":"1"}]}}`)
+	defer done()
+
+	_, err := c.HistoryAll(context.Background(), nil)
+	if err == nil || !strings.Contains(err.Error(), "missing offset") {
+		t.Fatalf("error = %v, want missing offset error", err)
+	}
+}
+
 func TestHistoryAllRejectsIncompletePagingMetadata(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -167,7 +177,7 @@ func TestListSectionItemsPagesWithEscapedKey(t *testing.T) {
 }
 
 func TestListSectionItemsRejectsPageWithoutProgress(t *testing.T) {
-	c, _, done := recorder(t, `{"MediaContainer":{"size":0,"totalSize":1,"Metadata":[]}}`)
+	c, _, done := recorder(t, `{"MediaContainer":{"size":0,"offset":0,"totalSize":1,"Metadata":[]}}`)
 	defer done()
 
 	_, err := c.ListSectionItems(context.Background(), "7")
@@ -209,6 +219,16 @@ func TestListSectionItemsAcceptsExplicitEmptyTotalSize(t *testing.T) {
 	}
 }
 
+func TestListSectionItemsRejectsMissingOffset(t *testing.T) {
+	c, _, done := recorder(t, `{"MediaContainer":{"size":1,"totalSize":1,"Metadata":[{"ratingKey":"1"}]}}`)
+	defer done()
+
+	_, err := c.ListSectionItems(context.Background(), "7")
+	if err == nil || !strings.Contains(err.Error(), "missing offset") {
+		t.Fatalf("error = %v, want missing offset error", err)
+	}
+}
+
 func TestListSectionItemsRejectsInconsistentPagingMetadata(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -230,13 +250,41 @@ func TestListSectionItemsRejectsInconsistentPagingMetadata(t *testing.T) {
 	}
 }
 
-func TestListSectionItemsRejectsChangingTotalSize(t *testing.T) {
+func TestListSectionItemsContinuesWhenTotalSizeGrows(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Query().Get("X-Plex-Container-Start") {
 		case "0":
 			_, _ = w.Write([]byte(`{"MediaContainer":{"size":1,"offset":0,"totalSize":2,"Metadata":[{"ratingKey":"1"}]}}`))
 		case "1":
 			_, _ = w.Write([]byte(`{"MediaContainer":{"size":1,"offset":1,"totalSize":3,"Metadata":[{"ratingKey":"2"}]}}`))
+		case "2":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"size":1,"offset":2,"totalSize":3,"Metadata":[{"ratingKey":"3"}]}}`))
+		default:
+			http.Error(w, "unexpected page", http.StatusBadRequest)
+		}
+	}))
+	defer s.Close()
+
+	a, err := api.New(s.URL, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := New(a).ListSectionItems(context.Background(), "7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(items.MediaContainer.Metadata); got != 3 {
+		t.Fatalf("item count = %d, want 3", got)
+	}
+}
+
+func TestListSectionItemsRejectsDecreasingTotalSize(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("X-Plex-Container-Start") {
+		case "0":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"size":1,"offset":0,"totalSize":3,"Metadata":[{"ratingKey":"1"}]}}`))
+		case "1":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"size":1,"offset":1,"totalSize":2,"Metadata":[{"ratingKey":"2"}]}}`))
 		default:
 			http.Error(w, "unexpected page", http.StatusBadRequest)
 		}
@@ -248,8 +296,59 @@ func TestListSectionItemsRejectsChangingTotalSize(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = New(a).ListSectionItems(context.Background(), "7")
-	if err == nil || !strings.Contains(err.Error(), "total size changed") {
-		t.Fatalf("error = %v, want changing total size error", err)
+	if err == nil || !strings.Contains(err.Error(), "total size decreased") {
+		t.Fatalf("error = %v, want total size decreased error", err)
+	}
+}
+
+func TestHistoryAllContinuesWhenTotalSizeGrows(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("X-Plex-Container-Start") {
+		case "0":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"size":1,"offset":0,"totalSize":2,"Metadata":[{"ratingKey":"1"}]}}`))
+		case "1":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"size":1,"offset":1,"totalSize":3,"Metadata":[{"ratingKey":"2"}]}}`))
+		case "2":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"size":1,"offset":2,"totalSize":3,"Metadata":[{"ratingKey":"3"}]}}`))
+		default:
+			http.Error(w, "unexpected page", http.StatusBadRequest)
+		}
+	}))
+	defer s.Close()
+
+	a, err := api.New(s.URL, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	history, err := New(a).HistoryAll(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(history.MediaContainer.Metadata); got != 3 {
+		t.Fatalf("history count = %d, want 3", got)
+	}
+}
+
+func TestHistoryAllRejectsDecreasingTotalSize(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("X-Plex-Container-Start") {
+		case "0":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"size":1,"offset":0,"totalSize":3,"Metadata":[{"ratingKey":"1"}]}}`))
+		case "1":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"size":1,"offset":1,"totalSize":2,"Metadata":[{"ratingKey":"2"}]}}`))
+		default:
+			http.Error(w, "unexpected page", http.StatusBadRequest)
+		}
+	}))
+	defer s.Close()
+
+	a, err := api.New(s.URL, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = New(a).HistoryAll(context.Background(), nil)
+	if err == nil || !strings.Contains(err.Error(), "total size decreased") {
+		t.Fatalf("error = %v, want total size decreased error", err)
 	}
 }
 

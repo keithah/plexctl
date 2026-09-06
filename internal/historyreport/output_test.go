@@ -84,6 +84,28 @@ func TestCSVExportAppendsQuotedRowsWithoutSecondHeader(t *testing.T) {
 	}
 }
 
+func TestCSVExportSeparatesBatchFromExistingRowWithoutTrailingNewline(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.csv")
+	if err := os.WriteFile(path, []byte(strings.Join(exportCSVHeader, ",")+"\nexisting,Existing,,,,,,,,,"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Export(path, []View{exportTestView()}); err != nil {
+		t.Fatalf("Export() error = %v", err)
+	}
+
+	rows := readCSVFile(t, path)
+	if len(rows) != 3 {
+		t.Fatalf("CSV row count = %d, want 3: %#v", len(rows), rows)
+	}
+	if got := rows[1][0]; got != "existing" {
+		t.Fatalf("existing rating key = %q, want existing", got)
+	}
+	if got := rows[2][0]; got != "one" {
+		t.Fatalf("appended rating key = %q, want one", got)
+	}
+}
+
 func TestJSONLExportAppendsOneValidObjectPerLine(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "history.jsonl")
 	first := exportTestView()

@@ -244,11 +244,48 @@ func NormalizeViews(source []SourceView) []View {
 			Duration:         value.Duration,
 		}
 	}
-	sort.SliceStable(views, func(i, j int) bool {
-		if !views[i].ViewedAt.Equal(views[j].ViewedAt) {
-			return views[i].ViewedAt.Before(views[j].ViewedAt)
-		}
-		return views[i].RatingKey < views[j].RatingKey
+	sort.Slice(views, func(i, j int) bool {
+		return compareViews(views[i], views[j]) < 0
 	})
 	return views
+}
+
+func compareViews(left, right View) int {
+	if !left.ViewedAt.Equal(right.ViewedAt) {
+		if left.ViewedAt.Before(right.ViewedAt) {
+			return -1
+		}
+		return 1
+	}
+	for _, values := range [][2]string{
+		{left.RatingKey, right.RatingKey},
+		{left.AccountID, right.AccountID},
+		{left.AccountTitle, right.AccountTitle},
+		{left.SectionID, right.SectionID},
+		{left.SectionTitle, right.SectionTitle},
+		{left.MediaType, right.MediaType},
+		{left.Title, right.Title},
+		{left.ParentTitle, right.ParentTitle},
+		{left.GrandparentTitle, right.GrandparentTitle},
+	} {
+		if values[0] < values[1] {
+			return -1
+		}
+		if values[0] > values[1] {
+			return 1
+		}
+	}
+	if left.Duration == nil && right.Duration != nil {
+		return -1
+	}
+	if left.Duration != nil && right.Duration == nil {
+		return 1
+	}
+	if left.Duration != nil && *left.Duration < *right.Duration {
+		return -1
+	}
+	if left.Duration != nil && *left.Duration > *right.Duration {
+		return 1
+	}
+	return 0
 }

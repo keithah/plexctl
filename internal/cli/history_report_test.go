@@ -82,7 +82,7 @@ func TestHistoryExportUsesOnlyHistoryGETAndAppendsCSV(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		fmt.Fprint(w, `{"MediaContainer":{"size":2,"totalSize":2,"Metadata":[{"ratingKey":"2","title":"Beta","type":"movie","viewedAt":1700000000,"duration":60000},{"ratingKey":"1","title":"Alpha","type":"movie","viewedAt":1600000000}]}}`)
+		fmt.Fprint(w, `{"MediaContainer":{"size":2,"offset":0,"totalSize":2,"Metadata":[{"ratingKey":"2","title":"Beta","type":"movie","viewedAt":1700000000,"duration":60000},{"ratingKey":"1","title":"Alpha","type":"movie","viewedAt":1600000000}]}}`)
 	})
 	defer server.Close()
 	historyReportConfig(t, server.URL)
@@ -117,7 +117,7 @@ func TestHistorySummaryUsesOnlyHistoryGETAndStableTable(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		fmt.Fprint(w, `{"MediaContainer":{"size":2,"totalSize":2,"Metadata":[{"ratingKey":"2","title":"Beta","viewedAt":1700000000,"librarySectionID":"2","librarySectionTitle":"TV","accountID":2,"accountTitle":"B"},{"ratingKey":"1","title":"Alpha","viewedAt":1600000000,"librarySectionID":"1","librarySectionTitle":"Films","accountID":1,"accountTitle":"A"}]}}`)
+		fmt.Fprint(w, `{"MediaContainer":{"size":2,"offset":0,"totalSize":2,"Metadata":[{"ratingKey":"2","title":"Beta","viewedAt":1700000000,"librarySectionID":"2","librarySectionTitle":"TV","accountID":2,"accountTitle":"B"},{"ratingKey":"1","title":"Alpha","viewedAt":1600000000,"librarySectionID":"1","librarySectionTitle":"Films","accountID":1,"accountTitle":"A"}]}}`)
 	})
 	defer server.Close()
 	historyReportConfig(t, server.URL)
@@ -174,11 +174,11 @@ func TestHistoryUnwatchedUsesOnlySectionAndItemGETs(t *testing.T) {
 	server, _ := historyReportServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/status/sessions/history/all":
-			fmt.Fprint(w, `{"MediaContainer":{"size":1,"totalSize":1,"Metadata":[{"ratingKey":"watched","viewedAt":1700000000}]}}`)
+			fmt.Fprint(w, `{"MediaContainer":{"size":1,"offset":0,"totalSize":1,"Metadata":[{"ratingKey":"watched","viewedAt":1700000000}]}}`)
 		case "/library/sections/all":
 			fmt.Fprint(w, `{"MediaContainer":{"size":1,"Directory":[{"key":"7","title":"Films","type":"movie"}]}}`)
 		case "/library/sections/7/all":
-			fmt.Fprint(w, `{"MediaContainer":{"size":2,"totalSize":2,"Metadata":[{"ratingKey":"watched","title":"Zulu","type":"movie"},{"ratingKey":"unwatched","title":"Alpha","type":"movie"}]}}`)
+			fmt.Fprint(w, `{"MediaContainer":{"size":2,"offset":0,"totalSize":2,"Metadata":[{"ratingKey":"watched","title":"Zulu","type":"movie"},{"ratingKey":"unwatched","title":"Alpha","type":"movie"}]}}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -206,11 +206,11 @@ func TestHistoryInactiveUsesStrictCutoff(t *testing.T) {
 	server, _ := historyReportServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/status/sessions/history/all":
-			fmt.Fprint(w, `{"MediaContainer":{"size":2,"totalSize":2,"Metadata":[{"ratingKey":"old","viewedAt":1699992799},{"ratingKey":"equal","viewedAt":1699992800}]}}`)
+			fmt.Fprint(w, `{"MediaContainer":{"size":2,"offset":0,"totalSize":2,"Metadata":[{"ratingKey":"old","viewedAt":1699992799},{"ratingKey":"equal","viewedAt":1699992800}]}}`)
 		case "/library/sections/all":
 			fmt.Fprint(w, `{"MediaContainer":{"size":1,"Directory":[{"key":"7","title":"Films"}]}}`)
 		case "/library/sections/7/all":
-			fmt.Fprint(w, `{"MediaContainer":{"size":3,"totalSize":3,"Metadata":[{"ratingKey":"equal","title":"Equal","type":"movie"},{"ratingKey":"old","title":"Old","type":"movie"},{"ratingKey":"never","title":"Never","type":"movie"}]}}`)
+			fmt.Fprint(w, `{"MediaContainer":{"size":3,"offset":0,"totalSize":3,"Metadata":[{"ratingKey":"equal","title":"Equal","type":"movie"},{"ratingKey":"old","title":"Old","type":"movie"},{"ratingKey":"never","title":"Never","type":"movie"}]}}`)
 		default:
 			http.NotFound(w, r)
 		}

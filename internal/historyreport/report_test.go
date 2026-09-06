@@ -197,6 +197,21 @@ func TestNormalizeAndSortViews(t *testing.T) {
 	}
 }
 
+func TestNormalizeViewsDoesNotPreserveInputOrderForEqualTimestampAndRatingKey(t *testing.T) {
+	viewedAt := time.Date(2026, time.September, 1, 12, 0, 0, 0, time.UTC)
+	withoutDuration := SourceView{RatingKey: "same", Title: "Title", MediaType: "movie", SectionID: "1", AccountID: "a", ViewedAt: viewedAt}
+	withDuration := withoutDuration
+	duration := time.Minute
+	withDuration.Duration = &duration
+	withDuration.AccountID = "b"
+
+	first := NormalizeViews([]SourceView{withoutDuration, withDuration})
+	second := NormalizeViews([]SourceView{withDuration, withoutDuration})
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("NormalizeViews() depends on input order: first=%#v second=%#v", first, second)
+	}
+}
+
 func durationPtr(value time.Duration) *time.Duration {
 	return &value
 }
