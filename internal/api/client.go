@@ -136,7 +136,7 @@ func (c *Client) doRawLimit(ctx context.Context, method, path string, query url.
 	}
 	resp, e := c.HTTP.Do(req)
 	if e != nil {
-		return nil, e
+		return nil, &transportError{Method: method, Path: path, Err: e}
 	}
 	defer resp.Body.Close()
 	// Read one byte past the cap so a body that exactly fills the limit can be

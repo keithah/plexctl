@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -49,6 +50,37 @@ func TestHTTPErrorDoesNotExposeToken(t *testing.T) {
 	e := c.Do(context.Background(), "GET", "/identity", nil, nil, nil)
 	if e == nil || strings.Contains(e.Error(), "secret") {
 		t.Fatalf("unsafe error: %v", e)
+	}
+	var httpErr *HTTPError
+	if !errors.As(e, &httpErr) || httpErr.StatusCode != http.StatusUnauthorized || httpErr.Method != http.MethodGet || httpErr.Path != "/identity" {
+		t.Fatalf("HTTPError classification = %#v", httpErr)
+	}
+}
+
+func TestTransportErrorRedactsPMSBaseURLAndToken(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseURL := "http://" + listener.Addr().String() + "/private-pms"
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := New(baseURL, "super-secret-token", &http.Client{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.Do(context.Background(), http.MethodGet, "/identity", nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected unreachable PMS transport error")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "GET /identity") {
+		t.Fatalf("error = %q, want method and path context", message)
+	}
+	if strings.Contains(message, baseURL) || strings.Contains(message, "super-secret-token") {
+		t.Fatalf("unsafe transport error: %q", message)
 	}
 }
 

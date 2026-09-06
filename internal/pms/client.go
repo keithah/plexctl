@@ -69,6 +69,7 @@ const sectionItemsPageSize = 100
 // that need to control the request query themselves.
 func (c *Client) ListSectionItems(ctx context.Context, key string) (MetadataContainer, error) {
 	var items MetadataContainer
+	var totalSize = -1
 	for start := 0; ; {
 		q := url.Values{}
 		q.Set("X-Plex-Container-Start", strconv.Itoa(start))
@@ -78,26 +79,41 @@ func (c *Client) ListSectionItems(ctx context.Context, key string) (MetadataCont
 			return MetadataContainer{}, fmt.Errorf("list section %s at offset %d: %w", key, start, err)
 		}
 
-		pageSize := page.MediaContainer.Size
-		decodedSize := len(page.MediaContainer.Metadata)
-		if pageSize != decodedSize {
-			return MetadataContainer{}, fmt.Errorf("list section %s at offset %d: declared size %d but decoded %d metadata items", key, start, pageSize, decodedSize)
+		container := page.MediaContainer
+		decodedSize := len(container.Metadata)
+		if container.Size != decodedSize {
+			return MetadataContainer{}, fmt.Errorf("list section %s at offset %d: declared size %d but decoded %d metadata items", key, start, container.Size, decodedSize)
 		}
-		if pageSize == 0 && page.MediaContainer.TotalSize <= start {
-			return items, nil
+		if container.Offset != start {
+			return MetadataContainer{}, fmt.Errorf("list section %s: unexpected offset %d, want %d", key, container.Offset, start)
 		}
-		if pageSize <= 0 {
+		if !container.totalSizeSet {
+			return MetadataContainer{}, fmt.Errorf("list section %s at offset %d: missing total size", key, start)
+		}
+		if container.TotalSize < start+container.Size {
+			return MetadataContainer{}, fmt.Errorf("list section %s at offset %d: invalid total size %d for page size %d", key, start, container.TotalSize, container.Size)
+		}
+		if totalSize == -1 {
+			totalSize = container.TotalSize
+		} else if container.TotalSize != totalSize {
+			return MetadataContainer{}, fmt.Errorf("list section %s: total size changed from %d to %d", key, totalSize, container.TotalSize)
+		}
+		if container.Size == 0 {
+			if start == container.TotalSize {
+				return items, nil
+			}
 			return MetadataContainer{}, fmt.Errorf("list section %s: no progress at offset %d", key, start)
 		}
-		items.MediaContainer.Metadata = append(items.MediaContainer.Metadata, page.MediaContainer.Metadata...)
+
+		items.MediaContainer.Metadata = append(items.MediaContainer.Metadata, container.Metadata...)
 		items.MediaContainer.Size = len(items.MediaContainer.Metadata)
-		items.MediaContainer.TotalSize = page.MediaContainer.TotalSize
-		start += pageSize
-		if page.MediaContainer.TotalSize > 0 && start >= page.MediaContainer.TotalSize {
+		items.MediaContainer.TotalSize = container.TotalSize
+		start += container.Size
+		if start == container.TotalSize {
 			return items, nil
 		}
-		if page.MediaContainer.TotalSize == 0 && pageSize < sectionItemsPageSize {
-			return items, nil
+		if start > container.TotalSize {
+			return MetadataContainer{}, fmt.Errorf("list section %s: offset %d exceeds total size %d", key, start, container.TotalSize)
 		}
 	}
 }

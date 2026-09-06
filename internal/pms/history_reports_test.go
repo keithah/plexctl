@@ -131,9 +131,9 @@ func TestListSectionItemsPagesWithEscapedKey(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Query().Get("X-Plex-Container-Start") {
 		case "0":
-			_, _ = w.Write([]byte(`{"MediaContainer":{"size":2,"totalSize":3,"Metadata":[{"ratingKey":"2","title":"Second"},{"ratingKey":"1","title":"First"}]}}`))
+			_, _ = w.Write([]byte(`{"MediaContainer":{"size":2,"offset":0,"totalSize":3,"Metadata":[{"ratingKey":"2","title":"Second"},{"ratingKey":"1","title":"First"}]}}`))
 		case "2":
-			_, _ = w.Write([]byte(`{"MediaContainer":{"size":1,"totalSize":3,"Metadata":[{"ratingKey":"3","title":"Third"}]}}`))
+			_, _ = w.Write([]byte(`{"MediaContainer":{"size":1,"offset":2,"totalSize":3,"Metadata":[{"ratingKey":"3","title":"Third"}]}}`))
 		default:
 			t.Errorf("unexpected page start: %q", r.URL.Query().Get("X-Plex-Container-Start"))
 			http.Error(w, "unexpected start", http.StatusBadRequest)
@@ -183,6 +183,73 @@ func TestListSectionItemsRejectsDeclaredSizeWithoutDecodedMetadata(t *testing.T)
 	_, err := c.ListSectionItems(context.Background(), "7")
 	if err == nil || !strings.Contains(err.Error(), "section 7") || !strings.Contains(err.Error(), "declared size 2") || !strings.Contains(err.Error(), "decoded 1") {
 		t.Fatalf("error = %v, want contextual declared-size mismatch error", err)
+	}
+}
+
+func TestListSectionItemsRejectsMissingTotalSizeOnEmptyPage(t *testing.T) {
+	c, _, done := recorder(t, `{"MediaContainer":{"size":0,"offset":0,"Metadata":[]}}`)
+	defer done()
+
+	_, err := c.ListSectionItems(context.Background(), "7")
+	if err == nil || !strings.Contains(err.Error(), "missing total size") {
+		t.Fatalf("error = %v, want missing total size error", err)
+	}
+}
+
+func TestListSectionItemsAcceptsExplicitEmptyTotalSize(t *testing.T) {
+	c, _, done := recorder(t, `{"MediaContainer":{"size":0,"offset":0,"totalSize":0,"Metadata":[]}}`)
+	defer done()
+
+	items, err := c.ListSectionItems(context.Background(), "7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if items.MediaContainer.Size != 0 || items.MediaContainer.TotalSize != 0 || len(items.MediaContainer.Metadata) != 0 {
+		t.Fatalf("items = %+v, want explicit empty section", items.MediaContainer)
+	}
+}
+
+func TestListSectionItemsRejectsInconsistentPagingMetadata(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{"unexpected offset", `{"MediaContainer":{"size":1,"offset":1,"totalSize":1,"Metadata":[{"ratingKey":"1"}]}}`, "unexpected offset"},
+		{"total smaller than page", `{"MediaContainer":{"size":2,"offset":0,"totalSize":1,"Metadata":[{"ratingKey":"1"},{"ratingKey":"2"}]}}`, "invalid total size"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c, _, done := recorder(t, test.body)
+			defer done()
+
+			_, err := c.ListSectionItems(context.Background(), "7")
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestListSectionItemsRejectsChangingTotalSize(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("X-Plex-Container-Start") {
+		case "0":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"size":1,"offset":0,"totalSize":2,"Metadata":[{"ratingKey":"1"}]}}`))
+		case "1":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"size":1,"offset":1,"totalSize":3,"Metadata":[{"ratingKey":"2"}]}}`))
+		default:
+			http.Error(w, "unexpected page", http.StatusBadRequest)
+		}
+	}))
+	defer s.Close()
+
+	a, err := api.New(s.URL, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = New(a).ListSectionItems(context.Background(), "7")
+	if err == nil || !strings.Contains(err.Error(), "total size changed") {
+		t.Fatalf("error = %v, want changing total size error", err)
 	}
 }
 
