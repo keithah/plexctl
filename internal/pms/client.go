@@ -238,6 +238,9 @@ func (c *Client) HistoryAll(ctx context.Context, q url.Values) (MetadataContaine
 		if container.Offset != start {
 			return MetadataContainer{}, fmt.Errorf("list playback history: unexpected offset %d, want %d", container.Offset, start)
 		}
+		if !container.totalSizeSet {
+			return MetadataContainer{}, fmt.Errorf("list playback history at offset %d: missing total size", start)
+		}
 		if container.TotalSize < start+container.Size {
 			return MetadataContainer{}, fmt.Errorf("list playback history at offset %d: invalid total size %d for page size %d", start, container.TotalSize, container.Size)
 		}

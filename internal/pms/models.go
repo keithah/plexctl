@@ -1,5 +1,7 @@
 package pms
 
+import "encoding/json"
+
 type SearchContainer struct {
 	MediaContainer struct {
 		Size int   `json:"size"`
@@ -78,13 +80,39 @@ type Directory struct {
 	Scanner string `json:"scanner"`
 }
 type MetadataContainer struct {
-	MediaContainer struct {
+	MediaContainer metadataMediaContainer `json:"MediaContainer"`
+}
+
+type metadataMediaContainer struct {
+	Size         int `json:"size"`
+	Offset       int `json:"offset"`
+	TotalSize    int `json:"totalSize"`
+	totalSizeSet bool
+	Metadata     []Metadata `json:"Metadata"`
+}
+
+func (m *metadataMediaContainer) UnmarshalJSON(data []byte) error {
+	var decoded struct {
 		Size      int        `json:"size"`
 		Offset    int        `json:"offset"`
-		TotalSize int        `json:"totalSize"`
+		TotalSize *int       `json:"totalSize"`
 		Metadata  []Metadata `json:"Metadata"`
-	} `json:"MediaContainer"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	m.Size = decoded.Size
+	m.Offset = decoded.Offset
+	m.Metadata = decoded.Metadata
+	m.totalSizeSet = decoded.TotalSize != nil
+	if m.totalSizeSet {
+		m.TotalSize = *decoded.TotalSize
+	} else {
+		m.TotalSize = 0
+	}
+	return nil
 }
+
 type Metadata struct {
 	RatingKey           string  `json:"ratingKey"`
 	Key                 string  `json:"key"`

@@ -72,6 +72,29 @@ func TestHistoryAllFetchesEveryPage(t *testing.T) {
 	}
 }
 
+func TestHistoryAllRejectsMissingTotalSizeOnEmptyPage(t *testing.T) {
+	c, _, done := recorder(t, `{"MediaContainer":{"size":0,"offset":0,"Metadata":[]}}`)
+	defer done()
+
+	_, err := c.HistoryAll(context.Background(), nil)
+	if err == nil || !strings.Contains(err.Error(), "missing total size") {
+		t.Fatalf("error = %v, want missing total size error", err)
+	}
+}
+
+func TestHistoryAllAcceptsExplicitEmptyTotalSize(t *testing.T) {
+	c, _, done := recorder(t, `{"MediaContainer":{"size":0,"offset":0,"totalSize":0,"Metadata":[]}}`)
+	defer done()
+
+	history, err := c.HistoryAll(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if history.MediaContainer.Size != 0 || history.MediaContainer.TotalSize != 0 || len(history.MediaContainer.Metadata) != 0 {
+		t.Fatalf("history = %+v, want explicit empty history", history.MediaContainer)
+	}
+}
+
 func TestHistoryAllRejectsIncompletePagingMetadata(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -80,7 +103,7 @@ func TestHistoryAllRejectsIncompletePagingMetadata(t *testing.T) {
 	}{
 		{"declared size mismatch", `{"MediaContainer":{"size":2,"offset":0,"totalSize":2,"Metadata":[{"ratingKey":"1"}]}}`, "declared size 2"},
 		{"no progress", `{"MediaContainer":{"size":0,"offset":0,"totalSize":1,"Metadata":[]}}`, "no progress"},
-		{"missing total", `{"MediaContainer":{"size":1,"offset":0,"Metadata":[{"ratingKey":"1"}]}}`, "invalid total size"},
+		{"missing total", `{"MediaContainer":{"size":1,"offset":0,"Metadata":[{"ratingKey":"1"}]}}`, "missing total size"},
 		{"unexpected offset", `{"MediaContainer":{"size":1,"offset":1,"totalSize":1,"Metadata":[{"ratingKey":"1"}]}}`, "unexpected offset"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
