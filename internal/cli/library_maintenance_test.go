@@ -25,8 +25,9 @@ type maintenanceRequest struct {
 const maintenanceToken = "library-maintenance-token-sentinel"
 
 func TestLibraryMaintenanceTSVFieldEscapesControls(t *testing.T) {
-	got := libraryMaintenanceTSVField("first\tcolumn\nsecond\rthird\x1b[2J")
-	want := "first\\tcolumn\\nsecond\\rthird\\x1B[2J"
+	input := "first" + string(rune(0x09)) + "column" + string(rune(0x0a)) + "second" + string(rune(0x0d)) + "third" + string(rune(0x1b)) + "[2J" + string(rune(0x009b)) + "C" + string(rune(0x008d))
+	got := libraryMaintenanceTSVField(input)
+	want := "first" + string(rune(0x5c)) + "tcolumn" + string(rune(0x5c)) + "nsecond" + string(rune(0x5c)) + "rthird" + string(rune(0x5c)) + "u001B[2J" + string(rune(0x5c)) + "u009BC" + string(rune(0x5c)) + "u008D"
 	if got != want {
 		t.Fatalf("field = %q, want %q", got, want)
 	}

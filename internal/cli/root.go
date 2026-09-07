@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 type options struct {
@@ -791,8 +792,8 @@ func libraryMaintenanceTSVField(value string) string {
 			escaped.WriteRune(0x5c)
 			escaped.WriteRune('r')
 		default:
-			if r < 0x20 || r == 0x7f {
-				fmt.Fprintf(&escaped, "\\x%02X", r)
+			if unicode.IsControl(r) {
+				fmt.Fprintf(&escaped, "\\u%04X", r)
 				continue
 			}
 			escaped.WriteRune(r)
