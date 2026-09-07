@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	pathpkg "path"
 	"strconv"
 	"strings"
 
@@ -60,6 +61,31 @@ func (c *Client) Items(ctx context.Context, key string, q url.Values) (MetadataC
 	var v MetadataContainer
 	e := c.API.Do(ctx, "GET", "/library/sections/"+url.PathEscape(key)+"/all", q, nil, &v)
 	return v, e
+}
+
+const thumbProbeLimit int64 = 1024
+
+// ProbeThumb verifies that an internal PMS thumbnail path returns at least one byte.
+func (c *Client) ProbeThumb(ctx context.Context, path string) error {
+	if !isInternalThumbPath(path) {
+		return fmt.Errorf("invalid thumbnail path")
+	}
+	body, err := c.API.DoRawHeadersLimited(ctx, "GET", path, nil, nil, http.Header{"Range": {"bytes=0-1023"}}, thumbProbeLimit)
+	if err != nil {
+		return fmt.Errorf("thumbnail probe failed")
+	}
+	if len(body) == 0 {
+		return fmt.Errorf("thumbnail probe returned no bytes")
+	}
+	return nil
+}
+
+func isInternalThumbPath(path string) bool {
+	parsed, err := url.Parse(path)
+	if err != nil || parsed.Scheme != "" || parsed.Host != "" || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
+		return false
+	}
+	return strings.HasPrefix(pathpkg.Clean(parsed.Path), "/library/")
 }
 
 const sectionItemsPageSize = 100
