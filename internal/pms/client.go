@@ -67,7 +67,7 @@ const thumbProbeLimit int64 = 1024
 
 // ProbeThumb verifies that an internal PMS thumbnail path returns at least one byte.
 func (c *Client) ProbeThumb(ctx context.Context, path string) error {
-	if !isInternalThumbPath(path) {
+	if !IsInternalThumbPath(path) {
 		return fmt.Errorf("invalid thumbnail path")
 	}
 	body, err := c.API.DoRawHeadersLimited(ctx, "GET", path, nil, nil, http.Header{"Range": {"bytes=0-1023"}}, thumbProbeLimit)
@@ -80,7 +80,8 @@ func (c *Client) ProbeThumb(ctx context.Context, path string) error {
 	return nil
 }
 
-func isInternalThumbPath(path string) bool {
+// IsInternalThumbPath reports whether value is a safe relative PMS thumbnail path.
+func IsInternalThumbPath(path string) bool {
 	parsed, err := url.Parse(path)
 	if err != nil || parsed.Scheme != "" || parsed.Host != "" || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
 		return false

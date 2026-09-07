@@ -706,10 +706,16 @@ func libraryMaintenanceCandidates(ctx context.Context, client *pms.Client, mode 
 			if err != nil {
 				return nil, fmt.Errorf("list collections in section %q: %w", section.Key, err)
 			}
+			if listed.MediaContainer.Size != len(listed.MediaContainer.Metadata) {
+				return nil, fmt.Errorf("list collections in section %q: declared size %d but decoded %d collections", section.Key, listed.MediaContainer.Size, len(listed.MediaContainer.Metadata))
+			}
 			for _, collection := range listed.MediaContainer.Metadata {
 				items, err := client.CollectionItems(ctx, collection.RatingKey)
 				if err != nil {
 					return nil, fmt.Errorf("list items in collection: %w", err)
+				}
+				if items.MediaContainer.Size != len(items.MediaContainer.Metadata) {
+					return nil, fmt.Errorf("list items in collection: declared size %d but decoded %d items", items.MediaContainer.Size, len(items.MediaContainer.Metadata))
 				}
 				collections = append(collections, librarymaintenance.Collection{SectionKey: section.Key, SectionTitle: section.Title, RatingKey: collection.RatingKey, Title: collection.Title, ItemCount: len(items.MediaContainer.Metadata), ItemCountKnown: true})
 			}
@@ -726,13 +732,11 @@ func libraryMaintenanceCandidates(ctx context.Context, client *pms.Client, mode 
 		for _, item := range listed.MediaContainer.Metadata {
 			value := libraryMaintenanceItem(section, item)
 			if mode == "missing-posters" && libraryMaintenanceMediaType(item.Type) && item.RatingKey != "" && item.Thumb != "" {
+				if !pms.IsInternalThumbPath(item.Thumb) {
+					return nil, errors.New("invalid thumbnail path")
+				}
 				value.Thumb = librarymaintenance.ThumbPresent
 				if err := client.ProbeThumb(ctx, item.Thumb); err != nil {
-					// Invalid paths are an integrity failure, not a candidate: do not
-					// resolve or disclose an external thumbnail URL.
-					if !libraryMaintenanceRelativeThumb(item.Thumb) {
-						return nil, errors.New("invalid thumbnail path")
-					}
 					value.Probe = librarymaintenance.ProbeFailed
 				} else {
 					value.Probe = librarymaintenance.ProbeSucceeded
@@ -751,11 +755,6 @@ func libraryMaintenanceCandidates(ctx context.Context, client *pms.Client, mode 
 	default:
 		return nil, errors.New("invalid library maintenance mode")
 	}
-}
-
-func libraryMaintenanceRelativeThumb(value string) bool {
-	parsed, err := url.Parse(value)
-	return err == nil && parsed.Scheme == "" && parsed.Host == "" && parsed.RawQuery == "" && !parsed.ForceQuery && parsed.Fragment == "" && strings.HasPrefix(value, "/library/")
 }
 
 func libraryMaintenanceMediaType(kind string) bool {

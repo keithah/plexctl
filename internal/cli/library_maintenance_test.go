@@ -203,6 +203,59 @@ func TestLibraryMaintenancePreviewClassifiesRelativePosterProbeFailures(t *testi
 	}
 }
 
+func TestLibraryMaintenancePreviewRejectsNormalizedUnsafeThumbWithoutOutput(t *testing.T) {
+	server, requests := maintenanceServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/library/sections/7/all":
+			fmt.Fprint(w, `{"MediaContainer":{"size":1,"offset":0,"totalSize":1,"Metadata":[{"ratingKey":"x","title":"X","type":"movie","thumb":"/library/../metadata/x/thumb"}]}}`)
+		default:
+			http.Error(w, "unexpected path", http.StatusNotFound)
+		}
+	})
+	defer server.Close()
+	maintenanceConfig(t, server.URL)
+
+	stdout, err := captureHistoryReportStdout(t, func() error {
+		_, err := run(t, "library", "maintenance", "preview", "--mode", "missing-posters", "--section", "7")
+		return err
+	})
+	if err == nil {
+		t.Fatal("unsafe thumbnail path succeeded")
+	}
+	if stdout != "" {
+		t.Fatalf("unsafe thumbnail path printed rows: %q", stdout)
+	}
+	if got := len(*requests); got != 1 {
+		t.Fatalf("requests = %d, want only section listing", got)
+	}
+}
+
+func TestLibraryMaintenancePreviewRejectsMalformedCollectionItemsWithoutOutput(t *testing.T) {
+	server, _ := maintenanceServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/library/sections/7/collections":
+			fmt.Fprint(w, `{"MediaContainer":{"size":1,"Metadata":[{"ratingKey":"c","title":"Not proven empty"}]}}`)
+		case "/library/collections/c/items":
+			fmt.Fprint(w, `{"MediaContainer":{"size":1,"Metadata":[]}}`)
+		default:
+			http.Error(w, "unexpected path", http.StatusNotFound)
+		}
+	})
+	defer server.Close()
+	maintenanceConfig(t, server.URL)
+
+	stdout, err := captureHistoryReportStdout(t, func() error {
+		_, err := run(t, "library", "maintenance", "preview", "--mode", "empty-collections", "--section", "7")
+		return err
+	})
+	if err == nil {
+		t.Fatal("malformed collection items succeeded")
+	}
+	if stdout != "" {
+		t.Fatalf("malformed collection items printed rows: %q", stdout)
+	}
+}
+
 func maintenanceServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *[]maintenanceRequest) {
 	t.Helper()
 	var mu sync.Mutex
