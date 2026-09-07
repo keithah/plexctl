@@ -47,3 +47,47 @@ func TestCollectionEndpoints(t *testing.T) {
 		t.Fatalf("items: %+v", items)
 	}
 }
+
+func TestListCollectionItemsValidatesCompletePaging(t *testing.T) {
+	t.Run("paginates", func(t *testing.T) {
+		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/library/collections/c1/items" {
+				http.NotFound(w, r)
+				return
+			}
+			switch r.URL.Query().Get("X-Plex-Container-Start") {
+			case "0":
+				_, _ = w.Write([]byte(`{"MediaContainer":{"size":1,"offset":0,"totalSize":2,"Metadata":[{"ratingKey":"a"}]}}`))
+			case "1":
+				_, _ = w.Write([]byte(`{"MediaContainer":{"size":1,"offset":1,"totalSize":2,"Metadata":[{"ratingKey":"b"}]}}`))
+			default:
+				http.Error(w, "unexpected page", http.StatusNotFound)
+			}
+		}))
+		defer s.Close()
+		a, err := api.New(s.URL, "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		items, err := New(a).ListCollectionItems(context.Background(), "c1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := len(items.MediaContainer.Metadata); got != 2 {
+			t.Fatalf("items = %d, want 2", got)
+		}
+	})
+	t.Run("rejects incomplete empty page", func(t *testing.T) {
+		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"MediaContainer":{"size":0,"offset":0,"totalSize":1,"Metadata":[]}}`))
+		}))
+		defer s.Close()
+		a, err := api.New(s.URL, "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := New(a).ListCollectionItems(context.Background(), "c1"); err == nil {
+			t.Fatal("incomplete empty page succeeded")
+		}
+	})
+}

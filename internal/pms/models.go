@@ -75,7 +75,7 @@ type LibrarySections struct {
 
 type LibrarySection struct {
 	MediaContainer struct {
-		Title string `json:"title"`
+		Title string `json:"title1"`
 		Key   string `json:"key"`
 		Type  string `json:"type"`
 	} `json:"MediaContainer"`

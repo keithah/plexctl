@@ -124,7 +124,7 @@ func TestLibraryMaintenancePreviewScopesSectionsAndFailsClosed(t *testing.T) {
 	server, requests := maintenanceServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/library/sections/7":
-			fmt.Fprint(w, `{"MediaContainer":{"title":"Films","key":"7","type":"movie"}}`)
+			fmt.Fprint(w, `{"MediaContainer":{"title1":"Films","key":"7","type":"movie"}}`)
 		case "/library/sections/7/all":
 			fmt.Fprint(w, `{"MediaContainer":{"size":1,"offset":0,"totalSize":1,"Metadata":[{"ratingKey":"x","title":"No poster","type":"movie","thumb":"https://outside.invalid/image"}]}}`)
 		case "/library/sections/7/collections":
@@ -160,7 +160,7 @@ func TestLibraryMaintenancePreviewScopesSectionsAndFailsClosed(t *testing.T) {
 func TestLibraryMaintenancePreviewPropagatesPaginationFailureWithoutRows(t *testing.T) {
 	server, _ := maintenanceServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/library/sections/7" {
-			fmt.Fprint(w, `{"MediaContainer":{"title":"Films","key":"7","type":"movie"}}`)
+			fmt.Fprint(w, `{"MediaContainer":{"title1":"Films","key":"7","type":"movie"}}`)
 			return
 		}
 		if r.URL.Path != "/library/sections/7/all" {
@@ -187,7 +187,7 @@ func TestLibraryMaintenancePreviewClassifiesRelativePosterProbeFailures(t *testi
 	server, _ := maintenanceServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/library/sections/7":
-			fmt.Fprint(w, `{"MediaContainer":{"title":"Films","key":"7","type":"movie"}}`)
+			fmt.Fprint(w, `{"MediaContainer":{"title1":"Films","key":"7","type":"movie"}}`)
 		case "/library/sections/7/all":
 			fmt.Fprint(w, `{"MediaContainer":{"size":2,"offset":0,"totalSize":2,"Metadata":[{"ratingKey":"zero","title":"Zero","type":"movie","thumb":"/library/metadata/zero/thumb"},{"ratingKey":"gone","title":"Gone","type":"movie","thumb":"/library/metadata/gone/thumb"}]}}`)
 		case "/library/metadata/zero/thumb":
@@ -217,7 +217,7 @@ func TestLibraryMaintenancePreviewRejectsNormalizedUnsafeThumbWithoutOutput(t *t
 	server, requests := maintenanceServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/library/sections/7":
-			fmt.Fprint(w, `{"MediaContainer":{"title":"Films","key":"7","type":"movie"}}`)
+			fmt.Fprint(w, `{"MediaContainer":{"title1":"Films","key":"7","type":"movie"}}`)
 		case "/library/sections/7/all":
 			fmt.Fprint(w, `{"MediaContainer":{"size":1,"offset":0,"totalSize":1,"Metadata":[{"ratingKey":"x","title":"X","type":"movie","thumb":"/library/../metadata/x/thumb"}]}}`)
 		default:
@@ -246,7 +246,7 @@ func TestLibraryMaintenancePreviewRejectsMalformedCollectionItemsWithoutOutput(t
 	server, _ := maintenanceServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/library/sections/7":
-			fmt.Fprint(w, `{"MediaContainer":{"title":"Films","key":"7","type":"movie"}}`)
+			fmt.Fprint(w, `{"MediaContainer":{"title1":"Films","key":"7","type":"movie"}}`)
 		case "/library/sections/7/collections":
 			fmt.Fprint(w, `{"MediaContainer":{"size":1,"Metadata":[{"ratingKey":"c","title":"Not proven empty"}]}}`)
 		case "/library/collections/c/items":
