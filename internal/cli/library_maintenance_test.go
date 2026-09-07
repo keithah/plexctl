@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -253,6 +255,96 @@ func TestLibraryMaintenancePreviewRejectsMalformedCollectionItemsWithoutOutput(t
 	}
 	if stdout != "" {
 		t.Fatalf("malformed collection items printed rows: %q", stdout)
+	}
+}
+
+func TestLibraryMaintenancePreviewBuiltCLIAcceptance(t *testing.T) {
+	server, requests := maintenanceServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/library/sections/all":
+			fmt.Fprint(w, `{"MediaContainer":{"size":2,"Directory":[{"key":"2","title":"TV","type":"show"},{"key":"1","title":"Films","type":"movie"}]}}`)
+		case "/library/sections/1/all":
+			fmt.Fprint(w, `{"MediaContainer":{"size":4,"offset":0,"totalSize":4,"Metadata":[{"ratingKey":"b","title":"  ALPHA  ","type":"movie","year":2000,"thumb":"/library/metadata/b/thumb","Guid":[{"id":"plex://movie/b"}]},{"ratingKey":"a","title":"Alpha","type":"movie","year":2020,"thumb":"","Guid":[{"id":"plex://movie/a"}]},{"ratingKey":"u","title":"Unmatched","type":"movie","year":2021,"thumb":"/library/metadata/u/thumb","Guid":[]},{"ratingKey":"m","title":"Matched","type":"movie","year":2022,"thumb":"/library/metadata/m/thumb","Guid":[{"id":"plex://movie/m"}]}]}}`)
+		case "/library/sections/2/all":
+			fmt.Fprint(w, `{"MediaContainer":{"size":0,"offset":0,"totalSize":0,"Metadata":[]}}`)
+		case "/library/sections/1/collections":
+			fmt.Fprint(w, `{"MediaContainer":{"size":1,"Metadata":[{"ratingKey":"c","title":"Empty"}]}}`)
+		case "/library/sections/2/collections":
+			fmt.Fprint(w, `{"MediaContainer":{"size":0,"Metadata":[]}}`)
+		case "/library/collections/c/items":
+			fmt.Fprint(w, `{"MediaContainer":{"size":0,"Metadata":[]}}`)
+		case "/library/metadata/b/thumb", "/library/metadata/u/thumb":
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write([]byte("x"))
+		case "/library/metadata/m/thumb":
+			http.Error(w, "fixture poster unavailable", http.StatusNotFound)
+		default:
+			http.Error(w, "unexpected path", http.StatusNotFound)
+		}
+	})
+	defer server.Close()
+
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(t.TempDir(), "plexctl")
+	build := exec.Command("go", "build", "-o", binary, "./cmd/plexctl")
+	build.Dir = repoRoot
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build fixture CLI: %v\\n%s", err, output)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	if err := config.Save(configPath, config.Config{Current: "test", Servers: map[string]config.Server{"test": {URL: server.URL, TokenEnv: "LIBRARY_MAINTENANCE_TOKEN"}}}); err != nil {
+		t.Fatal(err)
+	}
+	workDir := t.TempDir()
+	cases := []struct{ mode, want string }{
+		{"empty-collections", "section_key	section_title	collection_rating_key	collection_title\n1	Films	c	Empty\n"},
+		{"duplicates", "section_key	section_title	normalized_title	rating_key	title	media_type	year\n1	Films	alpha	a	Alpha	movie	2020\n1	Films	alpha	b	  ALPHA  	movie	2000\n"},
+		{"missing-posters", "section_key	section_title	rating_key	title	media_type	reason\n1	Films	a	Alpha	movie	missing_thumb\n1	Films	m	Matched	movie	probe_failed\n"},
+		{"unmatched", "section_key	section_title	rating_key	title	media_type	year\n1	Films	u	Unmatched	movie	2021\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.mode, func(t *testing.T) {
+			command := exec.Command(binary, "library", "maintenance", "preview", "--mode", tc.mode)
+			command.Dir = workDir
+			command.Env = append(os.Environ(), "PLEXCTL_CONFIG="+configPath, "LIBRARY_MAINTENANCE_TOKEN="+maintenanceToken)
+			output, err := command.CombinedOutput()
+			if err != nil {
+				t.Fatalf("run built CLI: %v\\n%s", err, output)
+			}
+			if got := string(output); got != tc.want {
+				t.Fatalf("output = %q, want %q", got, tc.want)
+			}
+			for _, forbidden := range []string{maintenanceToken, server.URL, "/library/metadata/"} {
+				if strings.Contains(string(output), forbidden) {
+					t.Errorf("output exposed %q: %q", forbidden, output)
+				}
+			}
+		})
+	}
+	for _, request := range *requests {
+		if request.method != http.MethodGet {
+			t.Errorf("method = %s, want GET", request.method)
+		}
+		if strings.HasPrefix(request.path, "/library/metadata/") && request.range_ != "bytes=0-1023" {
+			t.Errorf("probe %s Range = %q, want bytes=0-1023", request.path, request.range_)
+		}
+	}
+	entries, err := os.ReadDir(workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("read-only preview created local files: %v", entries)
+	}
+	if err := os.Remove(binary); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(binary); !os.IsNotExist(err) {
+		t.Fatalf("temporary CLI binary still exists: %v", err)
 	}
 }
 
