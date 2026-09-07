@@ -671,8 +671,16 @@ func validateLibraryMaintenanceMode(mode string) error {
 
 func libraryMaintenanceSections(ctx context.Context, client *pms.Client, selected string) ([]pms.Directory, error) {
 	if selected != "" {
-		// A selected key is authoritative; avoid an unnecessary section-list read.
-		return []pms.Directory{{Key: selected}}, nil
+		// Resolve exactly the selected section so scoped output retains its required title
+		// without listing unrelated sections.
+		resolved, err := client.Section(ctx, selected)
+		if err != nil {
+			return nil, fmt.Errorf("get library section %q: %w", selected, err)
+		}
+		if resolved.MediaContainer.Title == "" {
+			return nil, fmt.Errorf("get library section %q: missing title", selected)
+		}
+		return []pms.Directory{{Key: selected, Title: resolved.MediaContainer.Title, Type: resolved.MediaContainer.Type}}, nil
 	}
 	sections, err := client.Sections(ctx)
 	if err != nil {
@@ -710,7 +718,7 @@ func libraryMaintenanceCandidates(ctx context.Context, client *pms.Client, mode 
 				return nil, fmt.Errorf("list collections in section %q: declared size %d but decoded %d collections", section.Key, listed.MediaContainer.Size, len(listed.MediaContainer.Metadata))
 			}
 			for _, collection := range listed.MediaContainer.Metadata {
-				items, err := client.CollectionItems(ctx, collection.RatingKey)
+				items, err := client.ListCollectionItems(ctx, collection.RatingKey)
 				if err != nil {
 					return nil, fmt.Errorf("list items in collection: %w", err)
 				}
@@ -731,7 +739,7 @@ func libraryMaintenanceCandidates(ctx context.Context, client *pms.Client, mode 
 		}
 		for _, item := range listed.MediaContainer.Metadata {
 			value := libraryMaintenanceItem(section, item)
-			if mode == "missing-posters" && libraryMaintenanceMediaType(item.Type) && item.RatingKey != "" && item.Thumb != "" {
+			if mode == "missing-posters" && librarymaintenance.IsNormalMedia(item.Type) && item.RatingKey != "" && item.Thumb != "" {
 				if !pms.IsInternalThumbPath(item.Thumb) {
 					return nil, errors.New("invalid thumbnail path")
 				}
@@ -754,15 +762,6 @@ func libraryMaintenanceCandidates(ctx context.Context, client *pms.Client, mode 
 		return librarymaintenance.Unmatched(items), nil
 	default:
 		return nil, errors.New("invalid library maintenance mode")
-	}
-}
-
-func libraryMaintenanceMediaType(kind string) bool {
-	switch kind {
-	case "movie", "show", "season", "episode", "artist", "album", "track", "photo", "clip":
-		return true
-	default:
-		return false
 	}
 }
 

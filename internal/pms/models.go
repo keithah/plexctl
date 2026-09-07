@@ -72,6 +72,14 @@ type LibrarySections struct {
 		Directory []Directory `json:"Directory"`
 	} `json:"MediaContainer"`
 }
+
+type LibrarySection struct {
+	MediaContainer struct {
+		Title string `json:"title"`
+		Key   string `json:"key"`
+		Type  string `json:"type"`
+	} `json:"MediaContainer"`
+}
 type Directory struct {
 	Key     string `json:"key"`
 	Type    string `json:"type"`

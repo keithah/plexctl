@@ -206,7 +206,8 @@ func lessItem(left, right Item) bool {
 	return left.Year < right.Year
 }
 
-func isNormalMedia(mediaType string) bool {
+// IsNormalMedia reports whether mediaType is eligible for item-based previews.
+func IsNormalMedia(mediaType string) bool {
 	switch mediaType {
 	case "movie", "show", "season", "episode", "artist", "album", "track", "photo", "clip":
 		return true
@@ -214,6 +215,8 @@ func isNormalMedia(mediaType string) bool {
 		return false
 	}
 }
+
+func isNormalMedia(mediaType string) bool { return IsNormalMedia(mediaType) }
 
 func normalizeTitle(title string) string {
 	return caseFold(strings.Join(strings.FieldsFunc(strings.TrimSpace(title), unicode.IsSpace), " "))
