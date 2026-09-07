@@ -96,7 +96,7 @@ func TestLibraryMaintenancePreviewReportsSafeDeterministicTables(t *testing.T) {
 		case "/library/sections/all":
 			fmt.Fprint(w, `{"MediaContainer":{"size":2,"Directory":[{"key":"2","title":"TV","type":"show"},{"key":"1","title":"Films","type":"movie"}]}}`)
 		case "/library/sections/1/all":
-			fmt.Fprint(w, `{"MediaContainer":{"size":4,"offset":0,"totalSize":4,"Metadata":[{"ratingKey":"b","title":"  ALPHA  ","type":"movie","year":2000,"thumb":"/library/metadata/b/thumb","Guid":[{"id":"plex://movie/b"}]},{"ratingKey":"a","title":"Alpha","type":"movie","year":2020,"thumb":"","Guid":[{"id":"plex://movie/a"}]},{"ratingKey":"u","title":"Unmatched","type":"movie","year":2021,"thumb":"/library/metadata/u/thumb","Guid":[]},{"ratingKey":"m","title":"Matched","type":"movie","year":2022,"thumb":"/library/metadata/m/thumb","Guid":[{"id":"plex://movie/m"}]}]}}`)
+			fmt.Fprint(w, `{"MediaContainer":{"size":4,"offset":0,"totalSize":4,"Metadata":[{"ratingKey":"b","title":"  ALPHA  ","type":"movie","year":2000,"thumb":"/library/metadata/b/thumb","Guid":[{"id":"plex://movie/b"}]},{"ratingKey":"a","title":"Alpha","type":"movie","year":2020,"thumb":"","Guid":[{"id":"plex://movie/a"}]},{"ratingKey":"u","title":"Unsafe\u009BTitle\u008D","type":"movie","year":2021,"thumb":"/library/metadata/u/thumb","Guid":[]},{"ratingKey":"m","title":"Matched","type":"movie","year":2022,"thumb":"/library/metadata/m/thumb","Guid":[{"id":"plex://movie/m"}]}]}}`)
 		case "/library/sections/2/all":
 			fmt.Fprint(w, `{"MediaContainer":{"size":0,"offset":0,"totalSize":0,"Metadata":[]}}`)
 		case "/library/sections/1/collections":
@@ -105,9 +105,11 @@ func TestLibraryMaintenancePreviewReportsSafeDeterministicTables(t *testing.T) {
 			fmt.Fprint(w, `{"MediaContainer":{"size":0,"offset":0,"totalSize":0,"Metadata":[]}}`)
 		case "/library/collections/c/items":
 			fmt.Fprint(w, `{"MediaContainer":{"size":0,"offset":0,"totalSize":0,"Metadata":[]}}`)
-		case "/library/metadata/b/thumb", "/library/metadata/u/thumb", "/library/metadata/m/thumb":
+		case "/library/metadata/b/thumb", "/library/metadata/u/thumb":
 			w.WriteHeader(http.StatusPartialContent)
 			_, _ = w.Write([]byte("x"))
+		case "/library/metadata/m/thumb":
+			http.Error(w, "fixture poster unavailable", http.StatusNotFound)
 		default:
 			http.Error(w, "unexpected path", http.StatusNotFound)
 		}
@@ -116,10 +118,10 @@ func TestLibraryMaintenancePreviewReportsSafeDeterministicTables(t *testing.T) {
 	maintenanceConfig(t, server.URL)
 
 	cases := []struct{ mode, want string }{
-		{"empty-collections", "section_key\tsection_title\tcollection_rating_key\tcollection_title\n1\tFilms\tc\tEmpty\n"},
-		{"duplicates", "section_key\tsection_title\tnormalized_title\trating_key\ttitle\tmedia_type\tyear\n1\tFilms\talpha\ta\tAlpha\tmovie\t2020\n1\tFilms\talpha\tb\t  ALPHA  \tmovie\t2000\n"},
-		{"missing-posters", "section_key\tsection_title\trating_key\ttitle\tmedia_type\treason\n1\tFilms\ta\tAlpha\tmovie\tmissing_thumb\n"},
-		{"unmatched", "section_key\tsection_title\trating_key\ttitle\tmedia_type\tyear\n1\tFilms\tu\tUnmatched\tmovie\t2021\n"},
+		{"empty-collections", "section_key	section_title	collection_rating_key	collection_title\n1	Films	c	Empty\n"},
+		{"duplicates", "section_key	section_title	normalized_title	rating_key	title	media_type	year\n1	Films	alpha	a	Alpha	movie	2020\n1	Films	alpha	b	  ALPHA  	movie	2000\n"},
+		{"missing-posters", "section_key	section_title	rating_key	title	media_type	reason\n1	Films	a	Alpha	movie	missing_thumb\n1	Films	m	Matched	movie	probe_failed\n"},
+		{"unmatched", "section_key	section_title	rating_key	title	media_type	year\n1	Films	u	Unsafe\\u009BTitle\\u008D	movie	2021\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.mode, func(t *testing.T) {
@@ -303,7 +305,7 @@ func TestLibraryMaintenancePreviewBuiltCLIAcceptance(t *testing.T) {
 		case "/library/sections/all":
 			fmt.Fprint(w, `{"MediaContainer":{"size":2,"Directory":[{"key":"2","title":"TV","type":"show"},{"key":"1","title":"Films","type":"movie"}]}}`)
 		case "/library/sections/1/all":
-			fmt.Fprint(w, `{"MediaContainer":{"size":4,"offset":0,"totalSize":4,"Metadata":[{"ratingKey":"b","title":"  ALPHA  ","type":"movie","year":2000,"thumb":"/library/metadata/b/thumb","Guid":[{"id":"plex://movie/b"}]},{"ratingKey":"a","title":"Alpha","type":"movie","year":2020,"thumb":"","Guid":[{"id":"plex://movie/a"}]},{"ratingKey":"u","title":"Unmatched","type":"movie","year":2021,"thumb":"/library/metadata/u/thumb","Guid":[]},{"ratingKey":"m","title":"Matched","type":"movie","year":2022,"thumb":"/library/metadata/m/thumb","Guid":[{"id":"plex://movie/m"}]}]}}`)
+			fmt.Fprint(w, `{"MediaContainer":{"size":4,"offset":0,"totalSize":4,"Metadata":[{"ratingKey":"b","title":"  ALPHA  ","type":"movie","year":2000,"thumb":"/library/metadata/b/thumb","Guid":[{"id":"plex://movie/b"}]},{"ratingKey":"a","title":"Alpha","type":"movie","year":2020,"thumb":"","Guid":[{"id":"plex://movie/a"}]},{"ratingKey":"u","title":"Unsafe\u009BTitle\u008D","type":"movie","year":2021,"thumb":"/library/metadata/u/thumb","Guid":[]},{"ratingKey":"m","title":"Matched","type":"movie","year":2022,"thumb":"/library/metadata/m/thumb","Guid":[{"id":"plex://movie/m"}]}]}}`)
 		case "/library/sections/2/all":
 			fmt.Fprint(w, `{"MediaContainer":{"size":0,"offset":0,"totalSize":0,"Metadata":[]}}`)
 		case "/library/sections/1/collections":
@@ -343,7 +345,7 @@ func TestLibraryMaintenancePreviewBuiltCLIAcceptance(t *testing.T) {
 		{"empty-collections", "section_key	section_title	collection_rating_key	collection_title\n1	Films	c	Empty\n"},
 		{"duplicates", "section_key	section_title	normalized_title	rating_key	title	media_type	year\n1	Films	alpha	a	Alpha	movie	2020\n1	Films	alpha	b	  ALPHA  	movie	2000\n"},
 		{"missing-posters", "section_key	section_title	rating_key	title	media_type	reason\n1	Films	a	Alpha	movie	missing_thumb\n1	Films	m	Matched	movie	probe_failed\n"},
-		{"unmatched", "section_key	section_title	rating_key	title	media_type	year\n1	Films	u	Unmatched	movie	2021\n"},
+		{"unmatched", "section_key	section_title	rating_key	title	media_type	year\n1	Films	u	Unsafe\\u009BTitle\\u008D	movie	2021\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.mode, func(t *testing.T) {
@@ -356,6 +358,18 @@ func TestLibraryMaintenancePreviewBuiltCLIAcceptance(t *testing.T) {
 			}
 			if got := string(output); got != tc.want {
 				t.Fatalf("output = %q, want %q", got, tc.want)
+			}
+			if tc.mode == "unmatched" {
+				lines := strings.Split(strings.TrimSuffix(string(output), "\n"), "\n")
+				if len(lines) != 2 {
+					t.Fatalf("unmatched output has %d physical rows, want 2: %q", len(lines), output)
+				}
+				if fields := strings.Split(lines[1], "	"); len(fields) != 6 {
+					t.Fatalf("unmatched data row has %d columns, want 6: %q", len(fields), lines[1])
+				}
+				if strings.ContainsAny(lines[1], string(rune(0x009b))+string(rune(0x008d))) {
+					t.Fatalf("unmatched output contains a literal C1 control: %q", lines[1])
+				}
 			}
 			for _, forbidden := range []string{maintenanceToken, server.URL, "/library/metadata/"} {
 				if strings.Contains(string(output), forbidden) {
