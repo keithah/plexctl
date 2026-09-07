@@ -719,6 +719,9 @@ func libraryMaintenanceCandidates(ctx context.Context, client *pms.Client, mode 
 				return nil, fmt.Errorf("list collections in section %q: declared size %d but decoded %d collections", section.Key, listed.MediaContainer.Size, len(listed.MediaContainer.Metadata))
 			}
 			for _, collection := range listed.MediaContainer.Metadata {
+				if collection.RatingKey == "" {
+					return nil, fmt.Errorf("list collections in section %q: collection missing rating key", section.Key)
+				}
 				items, err := client.ListCollectionItems(ctx, collection.RatingKey)
 				if err != nil {
 					return nil, fmt.Errorf("list items in collection: %w", err)

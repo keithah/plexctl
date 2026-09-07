@@ -299,6 +299,39 @@ func TestLibraryMaintenancePreviewRejectsMalformedCollectionItemsWithoutOutput(t
 	}
 }
 
+func TestLibraryMaintenancePreviewRejectsCollectionWithoutRatingKeyWithoutOutput(t *testing.T) {
+	server, requests := maintenanceServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/library/sections/7":
+			fmt.Fprint(w, `{"MediaContainer":{"title1":"Films","key":"7","type":"movie"}}`)
+		case "/library/sections/7/collections":
+			fmt.Fprint(w, `{"MediaContainer":{"size":1,"offset":0,"totalSize":1,"Metadata":[{"ratingKey":"","title":"Nameless"}]}}`)
+		case "/library/collections//items":
+			fmt.Fprint(w, `{"MediaContainer":{"size":0,"offset":0,"totalSize":0,"Metadata":[]}}`)
+		default:
+			http.Error(w, "unexpected path", http.StatusNotFound)
+		}
+	})
+	defer server.Close()
+	maintenanceConfig(t, server.URL)
+
+	stdout, err := captureHistoryReportStdout(t, func() error {
+		_, err := run(t, "library", "maintenance", "preview", "--mode", "empty-collections", "--section", "7")
+		return err
+	})
+	if err == nil {
+		t.Fatal("collection without rating key succeeded")
+	}
+	if stdout != "" {
+		t.Fatalf("collection without rating key printed rows: %q", stdout)
+	}
+	for _, request := range *requests {
+		if request.path == "/library/collections//items" {
+			t.Fatalf("malformed collection requested item path: %q", request.path)
+		}
+	}
+}
+
 func TestLibraryMaintenancePreviewBuiltCLIAcceptance(t *testing.T) {
 	server, requests := maintenanceServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
