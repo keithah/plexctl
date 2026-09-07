@@ -44,11 +44,12 @@ type Item struct {
 
 // Collection is a collection record with the successfully retrieved item count.
 type Collection struct {
-	SectionKey   string
-	SectionTitle string
-	RatingKey    string
-	Title        string
-	ItemCount    int
+	SectionKey     string
+	SectionTitle   string
+	RatingKey      string
+	Title          string
+	ItemCount      int
+	ItemCountKnown bool
 }
 
 // Candidate is a safe display record for a maintenance preview.
@@ -63,15 +64,20 @@ type Candidate struct {
 	Reason       string
 }
 
+type duplicateGroupKey struct {
+	sectionKey string
+	groupTitle string
+}
+
 // Duplicates returns normal media items that share a normalized title within a section.
 func Duplicates(items []Item) []Candidate {
-	groups := make(map[string][]Item)
+	groups := make(map[duplicateGroupKey][]Item)
 	for _, item := range items {
 		if !isNormalMedia(item.MediaType) || item.RatingKey == "" {
 			continue
 		}
 		groupTitle := normalizeTitle(item.Title)
-		key := item.SectionKey + "\x00" + groupTitle
+		key := duplicateGroupKey{sectionKey: item.SectionKey, groupTitle: groupTitle}
 		groups[key] = append(groups[key], item)
 	}
 
@@ -99,7 +105,7 @@ func Duplicates(items []Item) []Candidate {
 func EmptyCollections(collections []Collection) []Candidate {
 	candidates := make([]Candidate, 0)
 	for _, collection := range collections {
-		if collection.ItemCount != 0 {
+		if !collection.ItemCountKnown || collection.ItemCount != 0 {
 			continue
 		}
 		candidates = append(candidates, Candidate{

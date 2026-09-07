@@ -33,6 +33,27 @@ func TestUnmatchedAcceptsExactlyNormalMediaTypes(t *testing.T) {
 	}
 }
 
+func TestDuplicatesNeverCrossesSectionsWithControlCharacters(t *testing.T) {
+	items := []Item{
+		{SectionKey: "films\x00tv", RatingKey: "one", Title: "pilot", MediaType: "movie"},
+		{SectionKey: "films", RatingKey: "two", Title: "tv\x00pilot", MediaType: "movie"},
+	}
+	if got := Duplicates(items); len(got) != 0 {
+		t.Fatalf("Duplicates() = %#v, want no cross-section group", got)
+	}
+}
+
+func TestEmptyCollectionsExcludesUnknownCounts(t *testing.T) {
+	collections := []Collection{
+		{SectionKey: "1", RatingKey: "known", Title: "Known empty", ItemCount: 0, ItemCountKnown: true},
+		{SectionKey: "1", RatingKey: "unknown", Title: "Unknown", ItemCount: 0},
+	}
+	want := []Candidate{{SectionKey: "1", RatingKey: "known", Title: "Known empty"}}
+	if got := EmptyCollections(collections); !reflect.DeepEqual(got, want) {
+		t.Fatalf("EmptyCollections() = %#v, want %#v", got, want)
+	}
+}
+
 func TestDuplicatesUsesUnicodeCaseFolding(t *testing.T) {
 	items := []Item{
 		{SectionKey: "1", RatingKey: "long-s", Title: "ſame", MediaType: "movie"},
@@ -61,8 +82,8 @@ func TestAnalysisOrderingDoesNotDependOnInputOrder(t *testing.T) {
 		{SectionKey: "1", RatingKey: "same", Title: "Same", MediaType: "movie", Thumb: ThumbMissing},
 	}
 	collections := []Collection{
-		{SectionKey: "2", RatingKey: "b", Title: "Beta"},
-		{SectionKey: "1", RatingKey: "a", Title: "Alpha"},
+		{SectionKey: "2", RatingKey: "b", Title: "Beta", ItemCountKnown: true},
+		{SectionKey: "1", RatingKey: "a", Title: "Alpha", ItemCountKnown: true},
 	}
 
 	assertSameCandidatesAfterReverse(t, "duplicates", Duplicates, duplicateItems)
@@ -73,8 +94,8 @@ func TestAnalysisOrderingDoesNotDependOnInputOrder(t *testing.T) {
 
 func TestEmptyCollectionsSelectsOnlyZeroItemCollections(t *testing.T) {
 	collections := []Collection{
-		{SectionKey: "2", SectionTitle: "TV", RatingKey: "empty-b", Title: "Zebra", ItemCount: 0},
-		{SectionKey: "1", SectionTitle: "Films", RatingKey: "empty-a", Title: "  alpha  ", ItemCount: 0},
+		{SectionKey: "2", SectionTitle: "TV", RatingKey: "empty-b", Title: "Zebra", ItemCount: 0, ItemCountKnown: true},
+		{SectionKey: "1", SectionTitle: "Films", RatingKey: "empty-a", Title: "  alpha  ", ItemCount: 0, ItemCountKnown: true},
 		{SectionKey: "1", RatingKey: "not-empty", Title: "Beta", ItemCount: 1},
 	}
 	want := []Candidate{
