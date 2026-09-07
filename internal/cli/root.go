@@ -13,6 +13,7 @@ import (
 	"github.com/keithah/plexctl/internal/connectioncache"
 	"github.com/keithah/plexctl/internal/health"
 	"github.com/keithah/plexctl/internal/historyreport"
+	"github.com/keithah/plexctl/internal/librarymaintenance"
 	"github.com/keithah/plexctl/internal/monitor"
 	"github.com/keithah/plexctl/internal/plexauth"
 	"github.com/keithah/plexctl/internal/pms"
@@ -622,7 +623,185 @@ func libraryCmd(o *options) *cobra.Command {
 	}}
 	recent.Flags().IntVar(&recentLimit, "limit", 20, "maximum number of items")
 	cmd.AddCommand(recent)
+	cmd.AddCommand(libraryMaintenanceCmd(o))
 	return cmd
+}
+
+func libraryMaintenanceCmd(o *options) *cobra.Command {
+	var mode, section string
+	cmd := &cobra.Command{Use: "maintenance", Short: "Preview read-only library maintenance candidates"}
+	preview := &cobra.Command{Use: "preview", Short: "Preview library maintenance candidates", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		if cmd.Flags().Changed("json") {
+			return errors.New("library maintenance preview does not support --json")
+		}
+		if err := validateLibraryMaintenanceMode(mode); err != nil {
+			return err
+		}
+		client, err := configured(o)
+		if err != nil {
+			return fmt.Errorf("configure library maintenance preview: %w", err)
+		}
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		sections, err := libraryMaintenanceSections(ctx, client, section)
+		if err != nil {
+			return err
+		}
+		rows, err := libraryMaintenanceCandidates(ctx, client, mode, sections)
+		if err != nil {
+			return err
+		}
+		printLibraryMaintenanceCandidates(mode, rows)
+		return nil
+	}}
+	preview.Flags().StringVar(&mode, "mode", "", "preview mode: empty-collections, duplicates, missing-posters, or unmatched")
+	preview.Flags().StringVar(&section, "section", "", "restrict to an exact library section key")
+	cmd.AddCommand(preview)
+	return cmd
+}
+
+func validateLibraryMaintenanceMode(mode string) error {
+	switch mode {
+	case "empty-collections", "duplicates", "missing-posters", "unmatched":
+		return nil
+	default:
+		return errors.New("--mode must be one of empty-collections, duplicates, missing-posters, or unmatched")
+	}
+}
+
+func libraryMaintenanceSections(ctx context.Context, client *pms.Client, selected string) ([]pms.Directory, error) {
+	if selected != "" {
+		// A selected key is authoritative; avoid an unnecessary section-list read.
+		return []pms.Directory{{Key: selected}}, nil
+	}
+	sections, err := client.Sections(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list library sections: %w", err)
+	}
+	result := make([]pms.Directory, 0, len(sections.MediaContainer.Directory))
+	for _, candidate := range sections.MediaContainer.Directory {
+		if libraryMaintenanceSectionType(candidate.Type) {
+			result = append(result, candidate)
+		}
+	}
+	return result, nil
+}
+
+// PMS uses these types for media-library sections; directories and unknown types
+// are intentionally skipped during unscoped scans.
+func libraryMaintenanceSectionType(kind string) bool {
+	switch kind {
+	case "movie", "show", "artist", "photo":
+		return true
+	default:
+		return false
+	}
+}
+
+func libraryMaintenanceCandidates(ctx context.Context, client *pms.Client, mode string, sections []pms.Directory) ([]librarymaintenance.Candidate, error) {
+	if mode == "empty-collections" {
+		collections := make([]librarymaintenance.Collection, 0)
+		for _, section := range sections {
+			listed, err := client.Collections(ctx, section.Key)
+			if err != nil {
+				return nil, fmt.Errorf("list collections in section %q: %w", section.Key, err)
+			}
+			for _, collection := range listed.MediaContainer.Metadata {
+				items, err := client.CollectionItems(ctx, collection.RatingKey)
+				if err != nil {
+					return nil, fmt.Errorf("list items in collection: %w", err)
+				}
+				collections = append(collections, librarymaintenance.Collection{SectionKey: section.Key, SectionTitle: section.Title, RatingKey: collection.RatingKey, Title: collection.Title, ItemCount: len(items.MediaContainer.Metadata), ItemCountKnown: true})
+			}
+		}
+		return librarymaintenance.EmptyCollections(collections), nil
+	}
+
+	items := make([]librarymaintenance.Item, 0)
+	for _, section := range sections {
+		listed, err := client.ListSectionItems(ctx, section.Key)
+		if err != nil {
+			return nil, fmt.Errorf("list items in section %q: %w", section.Key, err)
+		}
+		for _, item := range listed.MediaContainer.Metadata {
+			value := libraryMaintenanceItem(section, item)
+			if mode == "missing-posters" && libraryMaintenanceMediaType(item.Type) && item.RatingKey != "" && item.Thumb != "" {
+				value.Thumb = librarymaintenance.ThumbPresent
+				if err := client.ProbeThumb(ctx, item.Thumb); err != nil {
+					// Invalid paths are an integrity failure, not a candidate: do not
+					// resolve or disclose an external thumbnail URL.
+					if !libraryMaintenanceRelativeThumb(item.Thumb) {
+						return nil, errors.New("invalid thumbnail path")
+					}
+					value.Probe = librarymaintenance.ProbeFailed
+				} else {
+					value.Probe = librarymaintenance.ProbeSucceeded
+				}
+			}
+			items = append(items, value)
+		}
+	}
+	switch mode {
+	case "duplicates":
+		return librarymaintenance.Duplicates(items), nil
+	case "missing-posters":
+		return librarymaintenance.MissingPosters(items), nil
+	case "unmatched":
+		return librarymaintenance.Unmatched(items), nil
+	default:
+		return nil, errors.New("invalid library maintenance mode")
+	}
+}
+
+func libraryMaintenanceRelativeThumb(value string) bool {
+	parsed, err := url.Parse(value)
+	return err == nil && parsed.Scheme == "" && parsed.Host == "" && parsed.RawQuery == "" && !parsed.ForceQuery && parsed.Fragment == "" && strings.HasPrefix(value, "/library/")
+}
+
+func libraryMaintenanceMediaType(kind string) bool {
+	switch kind {
+	case "movie", "show", "season", "episode", "artist", "album", "track", "photo", "clip":
+		return true
+	default:
+		return false
+	}
+}
+
+func libraryMaintenanceItem(section pms.Directory, item pms.Metadata) librarymaintenance.Item {
+	guids := make([]string, 0, len(item.GUID))
+	for _, guid := range item.GUID {
+		guids = append(guids, guid.ID)
+	}
+	thumb := librarymaintenance.ThumbPresent
+	if item.Thumb == "" {
+		thumb = librarymaintenance.ThumbMissing
+	}
+	return librarymaintenance.Item{SectionKey: section.Key, SectionTitle: section.Title, RatingKey: item.RatingKey, Title: item.Title, MediaType: item.Type, Year: item.Year, Thumb: thumb, GUIDs: guids}
+}
+
+func printLibraryMaintenanceCandidates(mode string, rows []librarymaintenance.Candidate) {
+	switch mode {
+	case "empty-collections":
+		fmt.Println("section_key	section_title	collection_rating_key	collection_title")
+		for _, row := range rows {
+			fmt.Printf("%s	%s	%s	%s\n", row.SectionKey, row.SectionTitle, row.RatingKey, row.Title)
+		}
+	case "duplicates":
+		fmt.Println("section_key	section_title	normalized_title	rating_key	title	media_type	year")
+		for _, row := range rows {
+			fmt.Printf("%s	%s	%s	%s	%s	%s	%d\n", row.SectionKey, row.SectionTitle, row.GroupTitle, row.RatingKey, row.Title, row.MediaType, row.Year)
+		}
+	case "missing-posters":
+		fmt.Println("section_key	section_title	rating_key	title	media_type	reason")
+		for _, row := range rows {
+			fmt.Printf("%s	%s	%s	%s	%s	%s\n", row.SectionKey, row.SectionTitle, row.RatingKey, row.Title, row.MediaType, row.Reason)
+		}
+	case "unmatched":
+		fmt.Println("section_key	section_title	rating_key	title	media_type	year")
+		for _, row := range rows {
+			fmt.Printf("%s	%s	%s	%s	%s	%d\n", row.SectionKey, row.SectionTitle, row.RatingKey, row.Title, row.MediaType, row.Year)
+		}
+	}
 }
 func metadataCmd(o *options) *cobra.Command {
 	cmd := &cobra.Command{Use: "metadata"}
