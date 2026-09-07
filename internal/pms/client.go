@@ -136,8 +136,8 @@ func (c *Client) ListSectionItems(ctx context.Context, key string) (MetadataCont
 		}
 		if totalSize == -1 {
 			totalSize = container.TotalSize
-		} else if container.TotalSize < totalSize {
-			return MetadataContainer{}, fmt.Errorf("list section %s: total size decreased from %d to %d", key, totalSize, container.TotalSize)
+		} else if container.TotalSize != totalSize {
+			return MetadataContainer{}, fmt.Errorf("list section %s: total size changed from %d to %d", key, totalSize, container.TotalSize)
 		} else {
 			totalSize = container.TotalSize
 		}
@@ -176,8 +176,8 @@ func (c *Client) ListCollections(ctx context.Context, sectionID string) (Metadat
 		if container.Size != decoded || !container.offsetSet || !container.totalSizeSet || container.Offset != start || container.TotalSize < start+container.Size {
 			return MetadataContainer{}, fmt.Errorf("list collections for section %s at offset %d: invalid paging metadata", sectionID, start)
 		}
-		if totalSize >= 0 && container.TotalSize < totalSize {
-			return MetadataContainer{}, fmt.Errorf("list collections for section %s: total size decreased", sectionID)
+		if totalSize >= 0 && container.TotalSize != totalSize {
+			return MetadataContainer{}, fmt.Errorf("list collections for section %s: total size changed", sectionID)
 		}
 		totalSize = container.TotalSize
 		if container.Size == 0 {
@@ -214,8 +214,8 @@ func (c *Client) ListCollectionItems(ctx context.Context, collectionID string) (
 		if container.Size != decoded || !container.offsetSet || !container.totalSizeSet || container.Offset != start || container.TotalSize < start+container.Size {
 			return MetadataContainer{}, fmt.Errorf("list collection %s at offset %d: invalid paging metadata", collectionID, start)
 		}
-		if totalSize >= 0 && container.TotalSize < totalSize {
-			return MetadataContainer{}, fmt.Errorf("list collection %s: total size decreased", collectionID)
+		if totalSize >= 0 && container.TotalSize != totalSize {
+			return MetadataContainer{}, fmt.Errorf("list collection %s: total size changed", collectionID)
 		}
 		totalSize = container.TotalSize
 		if container.Size == 0 {

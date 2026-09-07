@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -363,7 +364,7 @@ func TestLibraryMaintenancePreviewBuiltCLIAcceptance(t *testing.T) {
 		t.Fatal(err)
 	}
 	binary := filepath.Join(t.TempDir(), "plexctl")
-	build := exec.Command("go", "build", "-o", binary, "./cmd/plexctl")
+	build := exec.CommandContext(context.Background(), "go", "build", "-o", binary, "./cmd/plexctl")
 	build.Dir = repoRoot
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build fixture CLI: %v\\n%s", err, output)
@@ -382,7 +383,7 @@ func TestLibraryMaintenancePreviewBuiltCLIAcceptance(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.mode, func(t *testing.T) {
-			command := exec.Command(binary, "library", "maintenance", "preview", "--mode", tc.mode)
+			command := exec.CommandContext(context.Background(), binary, "library", "maintenance", "preview", "--mode", tc.mode)
 			command.Dir = workDir
 			command.Env = append(os.Environ(), "PLEXCTL_CONFIG="+configPath, "LIBRARY_MAINTENANCE_TOKEN="+maintenanceToken)
 			output, err := command.CombinedOutput()

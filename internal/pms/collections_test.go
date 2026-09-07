@@ -142,3 +142,40 @@ func TestListCollectionsValidatesCompletePaging(t *testing.T) {
 		}
 	})
 }
+
+func TestCollectionPaginatorsRejectChangingTotalSize(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		list func(*Client) error
+	}{
+		{"collections", "/library/sections/2/collections", func(c *Client) error { _, err := c.ListCollections(context.Background(), "2"); return err }},
+		{"collection items", "/library/collections/c1/items", func(c *Client) error { _, err := c.ListCollectionItems(context.Background(), "c1"); return err }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != test.path {
+					http.NotFound(w, r)
+					return
+				}
+				switch r.URL.Query().Get("X-Plex-Container-Start") {
+				case "0":
+					_, _ = w.Write([]byte(`{"MediaContainer":{"size":1,"offset":0,"totalSize":2,"Metadata":[{"ratingKey":"first"}]}}`))
+				case "1":
+					_, _ = w.Write([]byte(`{"MediaContainer":{"size":1,"offset":1,"totalSize":3,"Metadata":[{"ratingKey":"second"}]}}`))
+				default:
+					http.Error(w, "unexpected page", http.StatusNotFound)
+				}
+			}))
+			defer s.Close()
+			a, err := api.New(s.URL, "", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := test.list(New(a)); err == nil || !strings.Contains(err.Error(), "total size changed") {
+				t.Fatalf("error = %v, want total size changed error", err)
+			}
+		})
+	}
+}

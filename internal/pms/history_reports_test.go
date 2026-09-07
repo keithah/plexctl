@@ -250,7 +250,7 @@ func TestListSectionItemsRejectsInconsistentPagingMetadata(t *testing.T) {
 	}
 }
 
-func TestListSectionItemsContinuesWhenTotalSizeGrows(t *testing.T) {
+func TestListSectionItemsRejectsChangingTotalSize(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Query().Get("X-Plex-Container-Start") {
 		case "0":
@@ -269,12 +269,9 @@ func TestListSectionItemsContinuesWhenTotalSizeGrows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	items, err := New(a).ListSectionItems(context.Background(), "7")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := len(items.MediaContainer.Metadata); got != 3 {
-		t.Fatalf("item count = %d, want 3", got)
+	_, err = New(a).ListSectionItems(context.Background(), "7")
+	if err == nil || !strings.Contains(err.Error(), "total size changed") {
+		t.Fatalf("error = %v, want total size changed error", err)
 	}
 }
 
@@ -296,8 +293,8 @@ func TestListSectionItemsRejectsDecreasingTotalSize(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = New(a).ListSectionItems(context.Background(), "7")
-	if err == nil || !strings.Contains(err.Error(), "total size decreased") {
-		t.Fatalf("error = %v, want total size decreased error", err)
+	if err == nil || !strings.Contains(err.Error(), "total size changed") {
+		t.Fatalf("error = %v, want total size changed error", err)
 	}
 }
 
