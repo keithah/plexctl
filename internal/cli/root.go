@@ -777,27 +777,58 @@ func libraryMaintenanceItem(section pms.Directory, item pms.Metadata) librarymai
 	return librarymaintenance.Item{SectionKey: section.Key, SectionTitle: section.Title, RatingKey: item.RatingKey, Title: item.Title, MediaType: item.Type, Year: item.Year, Thumb: thumb, GUIDs: guids}
 }
 
+func libraryMaintenanceTSVField(value string) string {
+	var escaped strings.Builder
+	for _, r := range value {
+		switch r {
+		case 0x09:
+			escaped.WriteRune(0x5c)
+			escaped.WriteRune('t')
+		case 0x0a:
+			escaped.WriteRune(0x5c)
+			escaped.WriteRune('n')
+		case 0x0d:
+			escaped.WriteRune(0x5c)
+			escaped.WriteRune('r')
+		default:
+			if r < 0x20 || r == 0x7f {
+				fmt.Fprintf(&escaped, "\\x%02X", r)
+				continue
+			}
+			escaped.WriteRune(r)
+		}
+	}
+	return escaped.String()
+}
+
+func libraryMaintenanceTSVRow(fields ...string) string {
+	for i := range fields {
+		fields[i] = libraryMaintenanceTSVField(fields[i])
+	}
+	return strings.Join(fields, "\t")
+}
+
 func printLibraryMaintenanceCandidates(mode string, rows []librarymaintenance.Candidate) {
 	switch mode {
 	case "empty-collections":
 		fmt.Println("section_key	section_title	collection_rating_key	collection_title")
 		for _, row := range rows {
-			fmt.Printf("%s	%s	%s	%s\n", row.SectionKey, row.SectionTitle, row.RatingKey, row.Title)
+			fmt.Println(libraryMaintenanceTSVRow(row.SectionKey, row.SectionTitle, row.RatingKey, row.Title))
 		}
 	case "duplicates":
 		fmt.Println("section_key	section_title	normalized_title	rating_key	title	media_type	year")
 		for _, row := range rows {
-			fmt.Printf("%s	%s	%s	%s	%s	%s	%d\n", row.SectionKey, row.SectionTitle, row.GroupTitle, row.RatingKey, row.Title, row.MediaType, row.Year)
+			fmt.Println(libraryMaintenanceTSVRow(row.SectionKey, row.SectionTitle, row.GroupTitle, row.RatingKey, row.Title, row.MediaType, strconv.Itoa(row.Year)))
 		}
 	case "missing-posters":
 		fmt.Println("section_key	section_title	rating_key	title	media_type	reason")
 		for _, row := range rows {
-			fmt.Printf("%s	%s	%s	%s	%s	%s\n", row.SectionKey, row.SectionTitle, row.RatingKey, row.Title, row.MediaType, row.Reason)
+			fmt.Println(libraryMaintenanceTSVRow(row.SectionKey, row.SectionTitle, row.RatingKey, row.Title, row.MediaType, row.Reason))
 		}
 	case "unmatched":
 		fmt.Println("section_key	section_title	rating_key	title	media_type	year")
 		for _, row := range rows {
-			fmt.Printf("%s	%s	%s	%s	%s	%d\n", row.SectionKey, row.SectionTitle, row.RatingKey, row.Title, row.MediaType, row.Year)
+			fmt.Println(libraryMaintenanceTSVRow(row.SectionKey, row.SectionTitle, row.RatingKey, row.Title, row.MediaType, strconv.Itoa(row.Year)))
 		}
 	}
 }

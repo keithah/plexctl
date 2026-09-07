@@ -24,6 +24,32 @@ type maintenanceRequest struct {
 
 const maintenanceToken = "library-maintenance-token-sentinel"
 
+func TestLibraryMaintenanceTSVFieldEscapesControls(t *testing.T) {
+	got := libraryMaintenanceTSVField("first\tcolumn\nsecond\rthird\x1b[2J")
+	want := "first\\tcolumn\\nsecond\\rthird\\x1B[2J"
+	if got != want {
+		t.Fatalf("field = %q, want %q", got, want)
+	}
+}
+
+func TestLibraryMaintenancePreviewRedactsPMSFailureDetail(t *testing.T) {
+	server, _ := maintenanceServer(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "http://private-pms.invalid Authorization: Bearer header-secret", http.StatusInternalServerError)
+	})
+	defer server.Close()
+	maintenanceConfig(t, server.URL)
+
+	_, err := run(t, "library", "maintenance", "preview", "--mode", "unmatched")
+	if err == nil {
+		t.Fatal("PMS failure succeeded")
+	}
+	for _, forbidden := range []string{"private-pms", "Authorization", "header-secret"} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Fatalf("PMS failure leaked %q: %v", forbidden, err)
+		}
+	}
+}
+
 func TestLibraryMaintenancePreviewCommandTree(t *testing.T) {
 	cmd, _, err := NewRoot().Find([]string{"library", "maintenance", "preview"})
 	if err != nil {
