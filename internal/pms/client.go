@@ -43,8 +43,11 @@ func (c *Client) PlaylistItems(ctx context.Context, id string) (MetadataContaine
 	return v, e
 }
 func (c *Client) Collections(ctx context.Context, sectionID string) (MetadataContainer, error) {
+	return c.collections(ctx, sectionID, nil)
+}
+func (c *Client) collections(ctx context.Context, sectionID string, q url.Values) (MetadataContainer, error) {
 	var v MetadataContainer
-	e := c.API.Do(ctx, "GET", "/library/sections/"+url.PathEscape(sectionID)+"/collections", nil, nil, &v)
+	e := c.API.Do(ctx, "GET", "/library/sections/"+url.PathEscape(sectionID)+"/collections", q, nil, &v)
 	return v, e
 }
 func (c *Client) CollectionItems(ctx context.Context, collectionID string) (MetadataContainer, error) {
@@ -154,6 +157,44 @@ func (c *Client) ListSectionItems(ctx context.Context, key string) (MetadataCont
 		}
 		if start > container.TotalSize {
 			return MetadataContainer{}, fmt.Errorf("list section %s: offset %d exceeds total size %d", key, start, container.TotalSize)
+		}
+	}
+}
+
+// ListCollections returns every collection in a section after validating complete paging metadata.
+func (c *Client) ListCollections(ctx context.Context, sectionID string) (MetadataContainer, error) {
+	var result MetadataContainer
+	totalSize := -1
+	for start := 0; ; {
+		q := url.Values{"X-Plex-Container-Start": []string{strconv.Itoa(start)}, "X-Plex-Container-Size": []string{strconv.Itoa(sectionItemsPageSize)}}
+		page, err := c.collections(ctx, sectionID, q)
+		if err != nil {
+			return MetadataContainer{}, fmt.Errorf("list collections for section %s at offset %d: %w", sectionID, start, err)
+		}
+		container := page.MediaContainer
+		decoded := len(container.Metadata)
+		if container.Size != decoded || !container.offsetSet || !container.totalSizeSet || container.Offset != start || container.TotalSize < start+container.Size {
+			return MetadataContainer{}, fmt.Errorf("list collections for section %s at offset %d: invalid paging metadata", sectionID, start)
+		}
+		if totalSize >= 0 && container.TotalSize < totalSize {
+			return MetadataContainer{}, fmt.Errorf("list collections for section %s: total size decreased", sectionID)
+		}
+		totalSize = container.TotalSize
+		if container.Size == 0 {
+			if start == container.TotalSize {
+				return result, nil
+			}
+			return MetadataContainer{}, fmt.Errorf("list collections for section %s: no progress at offset %d", sectionID, start)
+		}
+		result.MediaContainer.Metadata = append(result.MediaContainer.Metadata, container.Metadata...)
+		result.MediaContainer.Size = len(result.MediaContainer.Metadata)
+		result.MediaContainer.TotalSize = container.TotalSize
+		start += container.Size
+		if start == container.TotalSize {
+			return result, nil
+		}
+		if start > container.TotalSize {
+			return MetadataContainer{}, fmt.Errorf("list collections for section %s: offset exceeds total size", sectionID)
 		}
 	}
 }

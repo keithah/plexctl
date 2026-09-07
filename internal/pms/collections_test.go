@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/keithah/plexctl/internal/api"
@@ -88,6 +89,56 @@ func TestListCollectionItemsValidatesCompletePaging(t *testing.T) {
 		}
 		if _, err := New(a).ListCollectionItems(context.Background(), "c1"); err == nil {
 			t.Fatal("incomplete empty page succeeded")
+		}
+	})
+}
+
+func TestListCollectionsValidatesCompletePaging(t *testing.T) {
+	t.Run("paginates", func(t *testing.T) {
+		var starts []string
+		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/library/sections/2/collections" {
+				http.NotFound(w, r)
+				return
+			}
+			start := r.URL.Query().Get("X-Plex-Container-Start")
+			starts = append(starts, start)
+			switch start {
+			case "0":
+				_, _ = w.Write([]byte(`{"MediaContainer":{"size":1,"offset":0,"totalSize":2,"Metadata":[{"ratingKey":"c1"}]}}`))
+			case "1":
+				_, _ = w.Write([]byte(`{"MediaContainer":{"size":1,"offset":1,"totalSize":2,"Metadata":[{"ratingKey":"c2"}]}}`))
+			default:
+				http.Error(w, "unexpected page", http.StatusNotFound)
+			}
+		}))
+		defer s.Close()
+		a, err := api.New(s.URL, "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		collections, err := New(a).ListCollections(context.Background(), "2")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := len(collections.MediaContainer.Metadata); got != 2 {
+			t.Fatalf("collections = %d, want 2", got)
+		}
+		if got := strings.Join(starts, ","); got != "0,1" {
+			t.Fatalf("page starts = %q, want 0,1", got)
+		}
+	})
+	t.Run("rejects incomplete listing", func(t *testing.T) {
+		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"MediaContainer":{"size":1,"offset":0,"totalSize":2,"Metadata":[{"ratingKey":"c1"}]}}`))
+		}))
+		defer s.Close()
+		a, err := api.New(s.URL, "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := New(a).ListCollections(context.Background(), "2"); err == nil {
+			t.Fatal("incomplete collection listing succeeded")
 		}
 	})
 }

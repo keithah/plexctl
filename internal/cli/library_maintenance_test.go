@@ -100,7 +100,7 @@ func TestLibraryMaintenancePreviewReportsSafeDeterministicTables(t *testing.T) {
 		case "/library/sections/2/all":
 			fmt.Fprint(w, `{"MediaContainer":{"size":0,"offset":0,"totalSize":0,"Metadata":[]}}`)
 		case "/library/sections/1/collections":
-			fmt.Fprint(w, `{"MediaContainer":{"size":1,"Metadata":[{"ratingKey":"c","title":"Empty"}]}}`)
+			fmt.Fprint(w, `{"MediaContainer":{"size":1,"offset":0,"totalSize":1,"Metadata":[{"ratingKey":"c","title":"Empty"}]}}`)
 		case "/library/sections/2/collections":
 			fmt.Fprint(w, `{"MediaContainer":{"size":0,"offset":0,"totalSize":0,"Metadata":[]}}`)
 		case "/library/collections/c/items":
@@ -157,7 +157,7 @@ func TestLibraryMaintenancePreviewScopesSectionsAndFailsClosed(t *testing.T) {
 		case "/library/sections/7/all":
 			fmt.Fprint(w, `{"MediaContainer":{"size":1,"offset":0,"totalSize":1,"Metadata":[{"ratingKey":"x","title":"No poster","type":"movie","thumb":"https://outside.invalid/image"}]}}`)
 		case "/library/sections/7/collections":
-			fmt.Fprint(w, `{"MediaContainer":{"size":1,"Metadata":[{"ratingKey":"bad","title":"Bad"}]}}`)
+			fmt.Fprint(w, `{"MediaContainer":{"size":1,"offset":0,"totalSize":1,"Metadata":[{"ratingKey":"bad","title":"Bad"}]}}`)
 		case "/library/collections/bad/items":
 			http.Error(w, "broken", http.StatusInternalServerError)
 		default:
@@ -277,7 +277,7 @@ func TestLibraryMaintenancePreviewRejectsMalformedCollectionItemsWithoutOutput(t
 		case "/library/sections/7":
 			fmt.Fprint(w, `{"MediaContainer":{"title1":"Films","key":"7","type":"movie"}}`)
 		case "/library/sections/7/collections":
-			fmt.Fprint(w, `{"MediaContainer":{"size":1,"Metadata":[{"ratingKey":"c","title":"Not proven empty"}]}}`)
+			fmt.Fprint(w, `{"MediaContainer":{"size":1,"offset":0,"totalSize":1,"Metadata":[{"ratingKey":"c","title":"Not proven empty"}]}}`)
 		case "/library/collections/c/items":
 			fmt.Fprint(w, `{"MediaContainer":{"size":1,"Metadata":[]}}`)
 		default:
@@ -309,7 +309,7 @@ func TestLibraryMaintenancePreviewBuiltCLIAcceptance(t *testing.T) {
 		case "/library/sections/2/all":
 			fmt.Fprint(w, `{"MediaContainer":{"size":0,"offset":0,"totalSize":0,"Metadata":[]}}`)
 		case "/library/sections/1/collections":
-			fmt.Fprint(w, `{"MediaContainer":{"size":1,"Metadata":[{"ratingKey":"c","title":"Empty"}]}}`)
+			fmt.Fprint(w, `{"MediaContainer":{"size":1,"offset":0,"totalSize":1,"Metadata":[{"ratingKey":"c","title":"Empty"}]}}`)
 		case "/library/sections/2/collections":
 			fmt.Fprint(w, `{"MediaContainer":{"size":0,"offset":0,"totalSize":0,"Metadata":[]}}`)
 		case "/library/collections/c/items":

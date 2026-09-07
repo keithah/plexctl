@@ -711,7 +711,7 @@ func libraryMaintenanceCandidates(ctx context.Context, client *pms.Client, mode 
 	if mode == "empty-collections" {
 		collections := make([]librarymaintenance.Collection, 0)
 		for _, section := range sections {
-			listed, err := client.Collections(ctx, section.Key)
+			listed, err := client.ListCollections(ctx, section.Key)
 			if err != nil {
 				return nil, fmt.Errorf("list collections in section %q: %w", section.Key, err)
 			}
