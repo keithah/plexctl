@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -63,6 +64,26 @@ func TestProbeThumbSendsBoundedAuthenticatedGET(t *testing.T) {
 	client := newProbeClient(t, s.URL, "test-token", nil)
 	if err := client.ProbeThumb(context.Background(), "/library/metadata/42/thumb/123"); err != nil {
 		t.Fatalf("ProbeThumb: %v", err)
+	}
+}
+
+func TestProbeThumbReadsAtMostConfiguredRange(t *testing.T) {
+	body := &countingReadCloser{remaining: 2048}
+	hc := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			// A 200 response with a long body models a PMS that ignored Range.
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       body,
+		}, nil
+	})}
+
+	err := newProbeClient(t, "http://example.invalid", "", hc).ProbeThumb(context.Background(), "/library/metadata/42/thumb/123")
+	if err != nil {
+		t.Fatalf("ProbeThumb: %v", err)
+	}
+	if got := body.read; got > 1024 {
+		t.Fatalf("probe read %d bytes, want at most 1024", got)
 	}
 }
 
@@ -133,6 +154,26 @@ func TestProbeThumbRejectsUnsafePathsBeforeRequest(t *testing.T) {
 		t.Fatalf("unsafe probes made %d requests", got)
 	}
 }
+
+type countingReadCloser struct {
+	remaining int
+	read      int
+}
+
+func (r *countingReadCloser) Read(p []byte) (int, error) {
+	if r.remaining == 0 {
+		return 0, io.EOF
+	}
+	n := min(len(p), r.remaining)
+	for i := range p[:n] {
+		p[i] = 'x'
+	}
+	r.remaining -= n
+	r.read += n
+	return n, nil
+}
+
+func (*countingReadCloser) Close() error { return nil }
 
 func newProbeClient(t *testing.T, baseURL, token string, hc *http.Client) *Client {
 	t.Helper()
