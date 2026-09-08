@@ -4,10 +4,13 @@ package libraryintegrity
 import (
 	"crypto/sha256"
 	"fmt"
+	"math"
 	"net/url"
 	pathpkg "path"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Identity is the public library identity safe to expose in reports.
@@ -25,6 +28,10 @@ type Item struct {
 type Media struct{ Parts []Part }
 
 // Part contains caller-only raw part data. Reference is never copied into output.
+// It must be a relative, clean PMS route of the form
+// /library/parts/<part-key>/<file-path>, with neither raw whitespace nor
+// control characters. Reserved or non-ASCII path characters must be valid
+// percent-encoded UTF-8; queries, fragments, authorities, and schemes are not allowed.
 type Part struct {
 	Reference     string
 	DeclaredBytes *int64
@@ -64,6 +71,9 @@ func Storage(items []Item) ([]StorageSummary, error) {
 				if part.DeclaredBytes == nil {
 					summary.UnknownPartCount++
 				} else {
+					if *part.DeclaredBytes > math.MaxInt64-summary.KnownBytes {
+						return nil, fmt.Errorf("declared byte total overflows int64")
+					}
 					summary.KnownPartCount++
 					summary.KnownBytes += *part.DeclaredBytes
 				}
@@ -110,11 +120,20 @@ func isSafePartReference(reference string) bool {
 	if reference == "" || strings.TrimSpace(reference) != reference {
 		return false
 	}
-	parsed, err := url.Parse(reference)
-	if err != nil || parsed.Scheme != "" || parsed.Host != "" || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
+	for _, r := range reference {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return false
+		}
+	}
+	parsed, err := url.ParseRequestURI(reference)
+	if err != nil || parsed.Scheme != "" || parsed.Host != "" || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || parsed.EscapedPath() != reference {
 		return false
 	}
-	return strings.HasPrefix(reference, "/library/parts/") && pathpkg.Clean(parsed.Path) == reference
+	if !utf8.ValidString(parsed.Path) || pathpkg.Clean(parsed.Path) != parsed.Path {
+		return false
+	}
+	segments := strings.Split(parsed.Path, "/")
+	return len(segments) >= 5 && segments[0] == "" && segments[1] == "library" && segments[2] == "parts" && segments[3] != "" && segments[4] != ""
 }
 
 // Status classifies a safe integrity candidate.

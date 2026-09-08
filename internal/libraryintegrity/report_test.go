@@ -79,6 +79,61 @@ func TestAnalysisOrderingDoesNotDependOnInputOrder(t *testing.T) {
 	}
 }
 
+func TestAnalysisRejectsUnsafeRawPartReferences(t *testing.T) {
+	for _, reference := range []string{
+		"/library/parts/1/file name",
+		"/library/parts/1/file\tname",
+		"/library/parts/1/file\x00name",
+		"/library/parts/1/file\x1fname",
+		"/library/parts/1/file\u0085name",
+		"/library/parts/1/file%",
+		"/library/parts/1/file%2",
+		"/library/parts/1/file%zz",
+	} {
+		t.Run(reference, func(t *testing.T) {
+			_, err := Storage([]Item{{
+				Identity: Identity{SectionKey: "1", RatingKey: "bad"},
+				Media:    []Media{{Parts: []Part{{Reference: reference}}}},
+			}})
+			if err == nil {
+				t.Fatal("Storage() accepted an unsafe raw part reference")
+			}
+		})
+	}
+}
+
+func TestAnalysisAcceptsPercentEncodedPartReferences(t *testing.T) {
+	for _, reference := range []string{
+		"/library/parts/1/file%20name.mkv",
+		"/library/parts/1/file%23chapter%25.mkv",
+		"/library/parts/1/%E2%9C%93.mkv",
+	} {
+		t.Run(reference, func(t *testing.T) {
+			if _, err := Storage([]Item{{
+				Identity: Identity{SectionKey: "1", RatingKey: "valid"},
+				Media:    []Media{{Parts: []Part{{Reference: reference}}}},
+			}}); err != nil {
+				t.Fatalf("Storage() rejected valid encoded part reference: %v", err)
+			}
+		})
+	}
+}
+
+func TestStorageRejectsDeclaredByteOverflow(t *testing.T) {
+	max, one := int64(^uint64(0)>>1), int64(1)
+	items := []Item{{
+		Identity: Identity{SectionKey: "1", RatingKey: "first"},
+		Media:    []Media{{Parts: []Part{{Reference: "/library/parts/1/first", DeclaredBytes: &max}}}},
+	}, {
+		Identity: Identity{SectionKey: "1", RatingKey: "second"},
+		Media:    []Media{{Parts: []Part{{Reference: "/library/parts/1/second", DeclaredBytes: &one}}}},
+	}}
+
+	if _, err := Storage(items); err == nil {
+		t.Fatal("Storage() succeeded when section byte total overflowed")
+	}
+}
+
 func TestStorageRejectsConflictingSectionMetadata(t *testing.T) {
 	items := []Item{{Identity: Identity{SectionKey: "1", SectionTitle: "Films", RatingKey: "a"}, Media: []Media{{Parts: []Part{{Reference: "/library/parts/1/a"}}}}}, {Identity: Identity{SectionKey: "1", SectionTitle: "Movies", RatingKey: "b"}, Media: []Media{{Parts: []Part{{Reference: "/library/parts/1/b"}}}}}}
 	if _, err := Storage(items); err == nil {
