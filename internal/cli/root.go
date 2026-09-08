@@ -848,6 +848,37 @@ func readOnlyAuditRejectJSON(cmd *cobra.Command) error {
 	return nil
 }
 
+type readOnlyAuditFailure struct{ err error }
+
+func (e *readOnlyAuditFailure) Error() string {
+	var statusErr *api.HTTPError
+	if errors.As(e.err, &statusErr) {
+		return fmt.Sprintf("read-only audit request failed: HTTP %d: %s", statusErr.StatusCode, http.StatusText(statusErr.StatusCode))
+	}
+	return "read-only audit failed"
+}
+
+func (e *readOnlyAuditFailure) Unwrap() error { return e.err }
+
+func readOnlyAuditError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var existing *readOnlyAuditFailure
+	if errors.As(err, &existing) {
+		return err
+	}
+	return &readOnlyAuditFailure{err: err}
+}
+
+func readOnlyAuditCommand(cmd *cobra.Command) *cobra.Command {
+	run := cmd.RunE
+	cmd.RunE = func(c *cobra.Command, args []string) error {
+		return readOnlyAuditError(run(c, args))
+	}
+	return cmd
+}
+
 func libraryIntegrityCmd(o *options) *cobra.Command {
 	var mode string
 	cmd := &cobra.Command{Use: "integrity"}
@@ -918,7 +949,7 @@ func libraryIntegrityCmd(o *options) *cobra.Command {
 		return nil
 	}}
 	report.Flags().StringVar(&mode, "mode", "", "storage, unavailable, duplicates, or suspicious")
-	cmd.AddCommand(report)
+	cmd.AddCommand(readOnlyAuditCommand(report))
 	return cmd
 }
 func libraryIntegrityItems(ctx context.Context, client *pms.Client) ([]libraryintegrity.Item, error) {
@@ -966,7 +997,7 @@ func printIntegrityCandidates(rows []libraryintegrity.Candidate) {
 }
 
 func sessionsDiagnosticsCmd(o *options) *cobra.Command {
-	return &cobra.Command{Use: "diagnostics", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+	cmd := &cobra.Command{Use: "diagnostics", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		if err := readOnlyAuditRejectJSON(cmd); err != nil {
 			return err
 		}
@@ -995,6 +1026,7 @@ func sessionsDiagnosticsCmd(o *options) *cobra.Command {
 		printSessionDiagnostics(report)
 		return nil
 	}}
+	return readOnlyAuditCommand(cmd)
 }
 func printSessionDiagnostics(r sessiondiagnostics.Report) {
 	fmt.Println("session_id\ttitle\tgrandparent_title\tparent_title\tuser_id\tuser_title\tclient_id\tclient_title\tclient_platform\tdecision")
@@ -1010,7 +1042,7 @@ func printSessionDiagnostics(r sessiondiagnostics.Report) {
 
 func serverMaintenanceCmd(o *options) *cobra.Command {
 	cmd := &cobra.Command{Use: "maintenance"}
-	cmd.AddCommand(&cobra.Command{Use: "status", Args: cobra.NoArgs, RunE: func(c *cobra.Command, _ []string) error {
+	status := &cobra.Command{Use: "status", Args: cobra.NoArgs, RunE: func(c *cobra.Command, _ []string) error {
 		if err := readOnlyAuditRejectJSON(c); err != nil {
 			return err
 		}
@@ -1045,7 +1077,8 @@ func serverMaintenanceCmd(o *options) *cobra.Command {
 		}
 		printMaintenanceStatus(r)
 		return nil
-	}})
+	}}
+	cmd.AddCommand(readOnlyAuditCommand(status))
 	return cmd
 }
 func optionalAuditValue[T any](v *T) string {
@@ -1125,7 +1158,7 @@ func collectionsAuditCmd(o *options) *cobra.Command {
 	return cmd
 }
 func containerAuditCommand(o *options, use string, list func(context.Context, *pms.Client) ([]containeraudit.Container, error)) *cobra.Command {
-	return &cobra.Command{Use: use, Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+	cmd := &cobra.Command{Use: use, Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		if err := readOnlyAuditRejectJSON(cmd); err != nil {
 			return err
 		}
@@ -1146,6 +1179,7 @@ func containerAuditCommand(o *options, use string, list func(context.Context, *p
 		printContainerAudit(r)
 		return nil
 	}}
+	return readOnlyAuditCommand(cmd)
 }
 func printContainerAudit(r containeraudit.Report) {
 	fmt.Println("container_id\ttitle\tkind\titems_complete\tempty\titem_rating_keys")

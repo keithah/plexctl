@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/keithah/plexctl/internal/api"
 	"github.com/keithah/plexctl/internal/config"
 )
 
@@ -20,6 +22,18 @@ const readOnlyAuditToken = "read-only-audit-token-sentinel"
 const readOnlyAuditPart = "/library/parts/opaque/file-name-sentinel.mkv"
 
 type readOnlyAuditRequest struct{ method, path, range_ string }
+
+func TestReadOnlyAuditErrorRetainsHTTPStatusClassification(t *testing.T) {
+	original := &api.HTTPError{StatusCode: http.StatusInternalServerError, Method: http.MethodGet, Path: "/activities"}
+	err := readOnlyAuditError(original)
+	if got, want := err.Error(), "read-only audit request failed: HTTP 500: Internal Server Error"; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+	var statusErr *api.HTTPError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("HTTP error classification = %#v", statusErr)
+	}
+}
 
 func TestReadOnlyAuditCommandTree(t *testing.T) {
 	for _, path := range [][]string{{"library", "integrity", "report"}, {"sessions", "diagnostics"}, {"server", "maintenance", "status"}, {"playlists", "audit"}, {"collections", "audit"}} {
@@ -107,6 +121,56 @@ func TestReadOnlyAuditBuiltCLIAcceptance(t *testing.T) {
 		if request.path == readOnlyAuditPart && request.range_ != "bytes=0-1023" {
 			t.Errorf("part range = %q", request.range_)
 		}
+	}
+}
+
+func TestReadOnlyAuditBuiltCLIUpstreamErrorsArePrivate(t *testing.T) {
+	server, _ := readOnlyAuditServer(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "response-body-sentinel Authorization: Bearer read-only-audit-token-sentinel", http.StatusInternalServerError)
+	})
+	defer server.Close()
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(t.TempDir(), "plexctl")
+	build := exec.CommandContext(context.Background(), "go", "build", "-o", binary, "./cmd/plexctl")
+	build.Dir = repoRoot
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, output)
+	}
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	if err := config.Save(configPath, config.Config{Current: "test", Servers: map[string]config.Server{"test": {URL: server.URL, TokenEnv: "READ_ONLY_AUDIT_TOKEN"}}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"library", "integrity", "report", "--mode", "storage"},
+		{"sessions", "diagnostics"},
+		{"server", "maintenance", "status"},
+		{"playlists", "audit"},
+		{"collections", "audit", "--section", "7"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			cmd := exec.CommandContext(context.Background(), binary, args...)
+			cmd.Dir = t.TempDir()
+			cmd.Env = append(os.Environ(), "PLEXCTL_CONFIG="+configPath, "READ_ONLY_AUDIT_TOKEN="+readOnlyAuditToken)
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout = &stdout
+			cmd.Stderr = &stderr
+			if err := cmd.Run(); err == nil {
+				t.Fatal("command succeeded")
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("partial stdout = %q", stdout.String())
+			}
+			for _, output := range []string{stdout.String(), stderr.String()} {
+				for _, forbidden := range []string{server.URL, readOnlyAuditToken, "Authorization", readOnlyAuditPart, "file-name-sentinel", "response-body-sentinel", "/library/sections", "/status/sessions", "/activities", "/playlists", "/collections"} {
+					if strings.Contains(output, forbidden) {
+						t.Errorf("output exposed %q: %q", forbidden, output)
+					}
+				}
+			}
+		})
 	}
 }
 
