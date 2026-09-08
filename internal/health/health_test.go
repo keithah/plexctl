@@ -71,7 +71,7 @@ func TestCheckRequiresTwoMediaByteProbes(t *testing.T) {
 			_, _ = w.Write([]byte(`{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"key":"/library/parts/1/file.mkv"}]}]}]}}`))
 		case r.URL.Path == "/library/parts/1/file.mkv":
 			requests++
-			if r.Header.Get("Range") != "bytes=0-1024" {
+			if r.Header.Get("Range") != "bytes=0-1023" {
 				t.Errorf("range=%q", r.Header.Get("Range"))
 			}
 			w.WriteHeader(http.StatusPartialContent)

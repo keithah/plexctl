@@ -456,11 +456,10 @@ func (c *Client) hasMediaBytes(ctx context.Context, metadata MetadataContainer) 
 		return false
 	}
 	for _, media := range metadata.MediaContainer.Metadata[0].Media {
-		if len(media.Part) == 0 || media.Part[0].Key == "" {
+		if len(media.Part) == 0 {
 			continue
 		}
-		body, err := c.API.DoRawHeadersLimited(ctx, "GET", media.Part[0].Key, url.Values{"download": []string{"1"}}, nil, http.Header{"Range": []string{"bytes=0-1024"}}, 1024)
-		if err == nil && len(body) > 0 {
+		if c.probePart(ctx, media.Part[0].Key) == nil {
 			return true
 		}
 	}
