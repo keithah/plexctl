@@ -266,6 +266,57 @@ func TestReadOnlyAuditBuiltCLIUpstreamErrorsArePrivate(t *testing.T) {
 	}
 }
 
+func TestReadOnlyAuditUsesValidatedConnectionAfterConfigReplacement(t *testing.T) {
+	tlsServer, tlsRequests := readOnlyAuditServer(t, readOnlyAuditFixture)
+	defer tlsServer.Close()
+	var httpRequests int
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpRequests++
+		if got := r.Header.Get("X-Plex-Token"); got != "later-http-token-sentinel" {
+			t.Errorf("HTTP token = %q, want later configured token", got)
+		}
+		http.Error(w, "must not be reached", http.StatusInternalServerError)
+	}))
+	defer httpServer.Close()
+
+	readOnlyAuditConfig(t, tlsServer.URL)
+	t.Setenv("READ_ONLY_AUDIT_HTTP_TOKEN", "later-http-token-sentinel")
+	readOnlyAuditTestHooks.Lock()
+	readOnlyAuditTestHooks.afterValidation = func() {
+		if err := config.Save(config.Path(), config.Config{Current: "test", Servers: map[string]config.Server{
+			"test": {URL: httpServer.URL, TokenEnv: "READ_ONLY_AUDIT_HTTP_TOKEN"},
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	readOnlyAuditTestHooks.Unlock()
+	defer func() {
+		readOnlyAuditTestHooks.Lock()
+		readOnlyAuditTestHooks.afterValidation = nil
+		readOnlyAuditTestHooks.Unlock()
+	}()
+
+	stdout, err := captureReadOnlyAuditStdout(t, func() error {
+		_, err := run(t, "library", "integrity", "report", "--mode", "storage")
+		return err
+	})
+	if err != nil {
+		t.Fatalf("audit after replacement: %v", err)
+	}
+	if got := httpRequests; got != 0 {
+		t.Fatalf("HTTP replacement received %d requests", got)
+	}
+	if got := len(*tlsRequests); got == 0 {
+		t.Fatal("validated HTTPS server received no requests")
+	}
+	assertReadOnlyAuditSafeTSV(t, stdout, tlsServer.URL)
+	for _, forbidden := range []string{httpServer.URL, "later-http-token-sentinel"} {
+		if strings.Contains(stdout, forbidden) {
+			t.Errorf("output exposed %q: %q", forbidden, stdout)
+		}
+	}
+}
+
 func TestReadOnlyAuditBuiltCLIRejectsHTTPConfigurationBeforeRequests(t *testing.T) {
 	var requests int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

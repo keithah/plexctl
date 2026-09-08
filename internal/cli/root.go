@@ -31,14 +31,17 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 )
 
 type options struct {
-	server  string
-	jsonOut bool
-	timeout time.Duration
+	server      string
+	jsonOut     bool
+	timeout     time.Duration
+	auditMu     sync.Mutex
+	auditClient *pms.Client
 }
 
 func NewRoot() *cobra.Command {
@@ -57,53 +60,59 @@ func Execute() {
 	}
 }
 func configured(o *options) (*pms.Client, error) {
-	c, e := config.Load(config.Path())
-	if e != nil {
-		return nil, e
+	c, err := config.Load(config.Path())
+	if err != nil {
+		return nil, err
 	}
-	var s config.Server
-	var token string
-	if len(c.ServersV2) > 0 && (o.server != "" || c.CurrentServer != "") {
-		name := o.server
+	resolved, err := resolveConfiguredConnection(c, o.server)
+	if err != nil {
+		return nil, err
+	}
+	token, err := resolved.token()
+	if err != nil {
+		return nil, err
+	}
+	return newPMSClient(resolved.server, token)
+}
+
+type resolvedConnection struct {
+	server       config.Server
+	tokenKey     string
+	useAuthStore bool
+}
+
+func resolveConfiguredConnection(c config.Config, selected string) (resolvedConnection, error) {
+	legacySelected := selected
+	if len(c.ServersV2) > 0 && (selected != "" || c.CurrentServer != "") {
+		name := selected
 		if name == "" {
 			name = c.CurrentServer
 		}
-		p, ok := c.ServersV2[name]
-		if ok {
-			if a, ok := c.Accounts[p.Account]; ok {
-				key := p.TokenKey
-				if key == "" {
-					key = a.TokenKey
-				}
-				token, e = authstore.Get(key)
-			} else {
-				e = fmt.Errorf("account %q is not configured", p.Account)
+		if profile, ok := c.ServersV2[name]; ok {
+			account, ok := c.Accounts[profile.Account]
+			if !ok {
+				return resolvedConnection{}, fmt.Errorf("account %q is not configured", profile.Account)
 			}
-			if e != nil {
-				return nil, e
+			tokenKey := profile.TokenKey
+			if tokenKey == "" {
+				tokenKey = account.TokenKey
 			}
-			s = config.Server{URL: p.URL, InsecureTLS: p.InsecureTLS}
-		} else {
-			_, s, e = c.Resolve(name)
-			if e != nil {
-				return nil, e
-			}
-			token, e = tokenFromEnv(s)
-			if e != nil {
-				return nil, e
-			}
+			return resolvedConnection{server: config.Server{URL: profile.URL, InsecureTLS: profile.InsecureTLS}, tokenKey: tokenKey, useAuthStore: true}, nil
 		}
-	} else {
-		_, s, e = c.Resolve(o.server)
-		if e != nil {
-			return nil, e
-		}
-		token, e = tokenFromEnv(s)
-		if e != nil {
-			return nil, e
-		}
+		legacySelected = name
 	}
-	return newPMSClient(s, token)
+	_, server, err := c.Resolve(legacySelected)
+	if err != nil {
+		return resolvedConnection{}, err
+	}
+	return resolvedConnection{server: server}, nil
+}
+
+func (r resolvedConnection) token() (string, error) {
+	if r.useAuthStore {
+		return authstore.Get(r.tokenKey)
+	}
+	return tokenFromEnv(r.server)
 }
 
 func tokenFromEnv(s config.Server) (string, error) {
@@ -874,41 +883,65 @@ func readOnlyAuditError(err error) error {
 func readOnlyAuditCommand(o *options, cmd *cobra.Command) *cobra.Command {
 	run := cmd.RunE
 	cmd.RunE = func(c *cobra.Command, args []string) error {
-		if err := readOnlyAuditHTTPS(o); err != nil {
+		client, err := configuredReadOnlyAudit(o)
+		if err != nil {
 			return readOnlyAuditError(err)
 		}
+		o.setReadOnlyAuditClient(client)
+		defer o.setReadOnlyAuditClient(nil)
 		return readOnlyAuditError(run(c, args))
 	}
 	return cmd
 }
 
-func readOnlyAuditHTTPS(o *options) error {
+func (o *options) setReadOnlyAuditClient(client *pms.Client) {
+	o.auditMu.Lock()
+	defer o.auditMu.Unlock()
+	o.auditClient = client
+}
+
+func readOnlyAuditClient(o *options) (*pms.Client, error) {
+	o.auditMu.Lock()
+	defer o.auditMu.Unlock()
+	if o.auditClient == nil {
+		return nil, errors.New("read-only audit client is unavailable")
+	}
+	return o.auditClient, nil
+}
+
+var readOnlyAuditTestHooks struct {
+	sync.RWMutex
+	afterValidation func()
+}
+
+func runReadOnlyAuditAfterValidationHook() {
+	readOnlyAuditTestHooks.RLock()
+	hook := readOnlyAuditTestHooks.afterValidation
+	readOnlyAuditTestHooks.RUnlock()
+	if hook != nil {
+		hook()
+	}
+}
+
+func configuredReadOnlyAudit(o *options) (*pms.Client, error) {
 	c, err := config.Load(config.Path())
 	if err != nil {
-		return err
+		return nil, err
 	}
-	var server config.Server
-	if len(c.ServersV2) > 0 && (o.server != "" || c.CurrentServer != "") {
-		name := o.server
-		if name == "" {
-			name = c.CurrentServer
-		}
-		if profile, ok := c.ServersV2[name]; ok {
-			server.URL = profile.URL
-		} else {
-			_, server, err = c.Resolve(name)
-		}
-	} else {
-		_, server, err = c.Resolve(o.server)
-	}
+	resolved, err := resolveConfiguredConnection(c, o.server)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	u, err := url.Parse(server.URL)
+	u, err := url.Parse(resolved.server.URL)
 	if err != nil || !strings.EqualFold(u.Scheme, "https") {
-		return errors.New("read-only audits require an HTTPS server configuration")
+		return nil, errors.New("read-only audits require an HTTPS server configuration")
 	}
-	return nil
+	runReadOnlyAuditAfterValidationHook()
+	token, err := resolved.token()
+	if err != nil {
+		return nil, err
+	}
+	return newPMSClient(resolved.server, token)
 }
 func libraryIntegrityCmd(o *options) *cobra.Command {
 	var mode, section string
@@ -923,7 +956,7 @@ func libraryIntegrityCmd(o *options) *cobra.Command {
 		if cmd.Flags().Changed("section") && strings.TrimSpace(section) == "" {
 			return errors.New("--section must not be blank")
 		}
-		client, err := configured(o)
+		client, err := readOnlyAuditClient(o)
 		if err != nil {
 			return err
 		}
@@ -1036,7 +1069,7 @@ func sessionsDiagnosticsCmd(o *options) *cobra.Command {
 		if err := readOnlyAuditRejectJSON(cmd); err != nil {
 			return err
 		}
-		client, err := configured(o)
+		client, err := readOnlyAuditClient(o)
 		if err != nil {
 			return err
 		}
@@ -1084,7 +1117,7 @@ func serverMaintenanceCmd(o *options) *cobra.Command {
 		if err := readOnlyAuditRejectJSON(c); err != nil {
 			return err
 		}
-		client, err := configured(o)
+		client, err := readOnlyAuditClient(o)
 		if err != nil {
 			return err
 		}
@@ -1204,7 +1237,7 @@ func containerAuditCommand(o *options, use string, list func(context.Context, *p
 		if err := readOnlyAuditRejectJSON(cmd); err != nil {
 			return err
 		}
-		client, err := configured(o)
+		client, err := readOnlyAuditClient(o)
 		if err != nil {
 			return err
 		}
