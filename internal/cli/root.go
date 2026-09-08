@@ -880,7 +880,7 @@ func readOnlyAuditCommand(cmd *cobra.Command) *cobra.Command {
 }
 
 func libraryIntegrityCmd(o *options) *cobra.Command {
-	var mode string
+	var mode, section string
 	cmd := &cobra.Command{Use: "integrity"}
 	report := &cobra.Command{Use: "report", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		if err := readOnlyAuditRejectJSON(cmd); err != nil {
@@ -889,13 +889,16 @@ func libraryIntegrityCmd(o *options) *cobra.Command {
 		if mode != "storage" && mode != "unavailable" && mode != "duplicates" && mode != "suspicious" {
 			return errors.New("--mode must be one of storage, unavailable, duplicates, or suspicious")
 		}
+		if cmd.Flags().Changed("section") && strings.TrimSpace(section) == "" {
+			return errors.New("--section must not be blank")
+		}
 		client, err := configured(o)
 		if err != nil {
 			return err
 		}
 		ctx, cancel := commandContext(o)
 		defer cancel()
-		items, err := libraryIntegrityItems(ctx, client)
+		items, err := libraryIntegrityItems(ctx, client, section)
 		if err != nil {
 			return err
 		}
@@ -949,16 +952,17 @@ func libraryIntegrityCmd(o *options) *cobra.Command {
 		return nil
 	}}
 	report.Flags().StringVar(&mode, "mode", "", "storage, unavailable, duplicates, or suspicious")
+	report.Flags().StringVar(&section, "section", "", "restrict to an exact library section key")
 	cmd.AddCommand(readOnlyAuditCommand(report))
 	return cmd
 }
-func libraryIntegrityItems(ctx context.Context, client *pms.Client) ([]libraryintegrity.Item, error) {
-	sections, err := client.Sections(ctx)
+func libraryIntegrityItems(ctx context.Context, client *pms.Client, selected string) ([]libraryintegrity.Item, error) {
+	sections, err := libraryMaintenanceSections(ctx, client, selected)
 	if err != nil {
 		return nil, err
 	}
 	var out []libraryintegrity.Item
-	for _, section := range sections.MediaContainer.Directory {
+	for _, section := range sections {
 		if !libraryMaintenanceSectionType(section.Type) {
 			continue
 		}

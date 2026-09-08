@@ -147,7 +147,7 @@ JSONL, database, cache, snapshot, or other local artifact, and use authenticated
 PMS `GET` requests only:
 
 ```bash
-plexctl library integrity report --mode storage|unavailable|duplicates|suspicious
+plexctl library integrity report --mode storage|unavailable|duplicates|suspicious [--section SECTION_KEY]
 plexctl sessions diagnostics
 plexctl server maintenance status
 plexctl playlists audit
@@ -169,10 +169,13 @@ plexctl collections audit --section SECTION_KEY
   media or part data, unsafe or blank part references, and declared zero-byte
   parts. Intentionally omitted sizes remain `size_unknown` rather than guessed.
 
-`collections audit` requires `--section SECTION_KEY`, which is an exact library
-section key, not a fuzzy name. The other four commands accept no audit-specific
-positional arguments or flags. `sessions diagnostics` prints active-session
-metadata plus stable decision-state totals. `server maintenance status` reports
+`library integrity report --section SECTION_KEY` optionally restricts the report
+to one exact library section key, resolving that section directly without
+enumerating unrelated sections. `collections audit` requires `--section
+SECTION_KEY`, which is also an exact library section key, not a fuzzy name.
+`sessions diagnostics`, `server maintenance status`, and `playlists audit` accept
+no audit-specific positional arguments or flags. `sessions diagnostics` prints
+active-session metadata plus stable decision-state totals. `server maintenance status` reports
 current activities, Butler task configuration, and the updater status PMS already
 reports. `playlists audit` and `collections audit` enumerate each container and
 its items, identifying empty containers, duplicate item references, and malformed

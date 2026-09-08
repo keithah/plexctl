@@ -69,6 +69,25 @@ func TestReadOnlyAuditRejectsValidationBeforeRequests(t *testing.T) {
 	}
 }
 
+func TestReadOnlyAuditRejectsBlankIntegritySectionBeforeRequests(t *testing.T) {
+	server, requests := readOnlyAuditServer(t, readOnlyAuditFixture)
+	defer server.Close()
+	readOnlyAuditConfig(t, server.URL)
+	stdout, err := captureReadOnlyAuditStdout(t, func() error {
+		_, err := run(t, "library", "integrity", "report", "--mode", "storage", "--section", " ")
+		return err
+	})
+	if got, want := fmt.Sprint(err), "read-only audit failed"; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if got := len(*requests); got != 0 {
+		t.Fatalf("validation made %d requests", got)
+	}
+}
+
 func TestReadOnlyAuditBuiltCLIAcceptance(t *testing.T) {
 	server, requests := readOnlyAuditServer(t, readOnlyAuditFixture)
 	defer server.Close()
@@ -121,6 +140,56 @@ func TestReadOnlyAuditBuiltCLIAcceptance(t *testing.T) {
 		if request.path == readOnlyAuditPart && request.range_ != "bytes=0-1023" {
 			t.Errorf("part range = %q", request.range_)
 		}
+	}
+}
+
+func TestReadOnlyAuditBuiltCLIIntegritySectionScope(t *testing.T) {
+	server, requests := readOnlyAuditServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/library/sections/7":
+			fmt.Fprint(w, `{"MediaContainer":{"title1":"Selected","key":"7","type":"movie"}}`)
+		case "/library/sections/7/all":
+			fmt.Fprint(w, `{"MediaContainer":{"size":1,"offset":0,"totalSize":1,"Metadata":[{"ratingKey":"selected","title":"Selected item","Media":[{"Part":[{"key":"/library/parts/selected/file.mkv","size":10}]}]}]}}`)
+		case "/library/sections/all", "/library/sections/8", "/library/sections/8/all":
+			http.Error(w, "unrelated section enumeration", http.StatusInternalServerError)
+		default:
+			http.Error(w, "unexpected request", http.StatusNotFound)
+		}
+	})
+	defer server.Close()
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(t.TempDir(), "plexctl")
+	build := exec.CommandContext(context.Background(), "go", "build", "-o", binary, "./cmd/plexctl")
+	build.Dir = repoRoot
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, output)
+	}
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	if err := config.Save(configPath, config.Config{Current: "test", Servers: map[string]config.Server{"test": {URL: server.URL, TokenEnv: "READ_ONLY_AUDIT_TOKEN"}}}); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(context.Background(), binary, "library", "integrity", "report", "--mode", "storage", "--section", "7")
+	cmd.Dir = t.TempDir()
+	cmd.Env = append(os.Environ(), "PLEXCTL_CONFIG="+configPath, "READ_ONLY_AUDIT_TOKEN="+readOnlyAuditToken)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run: %v\n%s", err, output)
+	}
+	const want = "section_key	section_title	known_part_count	unknown_part_count	known_bytes\n7	Selected	1	0	10\n"
+	if got := string(output); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+	if got := len(*requests); got != 2 {
+		t.Fatalf("requests = %d, want 2: %#v", got, *requests)
+	}
+	if got, want := (*requests)[0].path, "/library/sections/7"; got != want {
+		t.Errorf("first request = %q, want %q", got, want)
+	}
+	if got, want := (*requests)[1].path, "/library/sections/7/all"; got != want {
+		t.Errorf("second request = %q, want %q", got, want)
 	}
 }
 
