@@ -93,14 +93,20 @@ func (c *Client) DoRawHeaders(ctx context.Context, method, path string, query ur
 }
 
 func (c *Client) DoRawHeadersLimited(ctx context.Context, method, path string, query url.Values, body io.Reader, headers http.Header, limit int64) ([]byte, error) {
-	return c.doRawLimit(ctx, method, path, query, body, headers, limit)
+	// Bounded probes must never consume an extra byte merely to discover an
+	// ignored Range header. Callers that need an oversized-response error use
+	// DoRaw/DoRawHeaders, which retain the one-byte detection read.
+	return c.doRawLimit(ctx, method, path, query, body, headers, limit, false)
 }
 
 func (c *Client) doRaw(ctx context.Context, method, path string, query url.Values, body io.Reader, headers http.Header) ([]byte, error) {
-	return c.doRawLimit(ctx, method, path, query, body, headers, maxResponseBytes)
+	return c.doRawLimit(ctx, method, path, query, body, headers, maxResponseBytes, true)
 }
 
-func (c *Client) doRawLimit(ctx context.Context, method, path string, query url.Values, body io.Reader, headers http.Header, limit int64) ([]byte, error) {
+func (c *Client) doRawLimit(ctx context.Context, method, path string, query url.Values, body io.Reader, headers http.Header, limit int64, detectOversize bool) ([]byte, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("response limit must be positive")
+	}
 	if path == "" || !strings.HasPrefix(path, "/") {
 		return nil, fmt.Errorf("api path must start with /")
 	}
@@ -139,13 +145,13 @@ func (c *Client) doRawLimit(ctx context.Context, method, path string, query url.
 		return nil, &transportError{Method: method, Path: path, Err: e}
 	}
 	defer resp.Body.Close()
-	// Read one byte past the cap so a body that exactly fills the limit can be
-	// distinguished from one that was truncated. Silently truncating would
-	// surface as a confusing "unexpected end of JSON input" decode error.
-	if limit <= 0 {
-		return nil, fmt.Errorf("response limit must be positive")
+	// Full API responses read one extra byte to report oversize explicitly;
+	// bounded range probes must never read beyond their caller-supplied cap.
+	readLimit := limit
+	if detectOversize {
+		readLimit++
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, readLimit))
 	if err != nil {
 		return nil, fmt.Errorf("read %s %s response: %w", method, path, err)
 	}

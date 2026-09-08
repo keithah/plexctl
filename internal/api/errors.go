@@ -3,7 +3,6 @@ package api
 import (
 	"fmt"
 	"net/http"
-	"strings"
 )
 
 type HTTPError struct {
@@ -28,9 +27,5 @@ func (e *transportError) Error() string {
 func (e *transportError) Unwrap() error { return e.Err }
 
 func (e *HTTPError) Error() string {
-	detail := strings.TrimSpace(e.Detail)
-	if detail == "" {
-		detail = http.StatusText(e.StatusCode)
-	}
-	return fmt.Sprintf("plex API %s %s: HTTP %d: %s", e.Method, e.Path, e.StatusCode, detail)
+	return fmt.Sprintf("plex API %s %s: HTTP %d: %s", e.Method, e.Path, e.StatusCode, http.StatusText(e.StatusCode))
 }

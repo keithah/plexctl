@@ -138,6 +138,15 @@ func TestExpectedClientDisconnect(t *testing.T) {
 	}
 }
 
+func TestHTTPErrorHidesUntrustedResponseDetail(t *testing.T) {
+	err := (&HTTPError{StatusCode: http.StatusInternalServerError, Method: http.MethodGet, Path: "/library/sections/1", Detail: "http://private-pms.invalid Authorization: Bearer secret"}).Error()
+	for _, forbidden := range []string{"private-pms", "Authorization", "secret"} {
+		if strings.Contains(err, forbidden) {
+			t.Fatalf("HTTP error leaked %q: %q", forbidden, err)
+		}
+	}
+}
+
 func expectedClientDisconnect(err error) bool {
 	return errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET)
 }

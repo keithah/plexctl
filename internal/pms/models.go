@@ -72,6 +72,14 @@ type LibrarySections struct {
 		Directory []Directory `json:"Directory"`
 	} `json:"MediaContainer"`
 }
+
+type LibrarySection struct {
+	MediaContainer struct {
+		Title string `json:"title1"`
+		Key   string `json:"key"`
+		Type  string `json:"type"`
+	} `json:"MediaContainer"`
+}
 type Directory struct {
 	Key     string `json:"key"`
 	Type    string `json:"type"`
@@ -124,6 +132,8 @@ type Metadata struct {
 	Key                 string  `json:"key"`
 	Type                string  `json:"type"`
 	Title               string  `json:"title"`
+	Thumb               string  `json:"thumb"`
+	GUID                []GUID  `json:"Guid"`
 	GrandparentTitle    string  `json:"grandparentTitle"`
 	ParentTitle         string  `json:"parentTitle"`
 	Year                int     `json:"year"`
@@ -135,6 +145,9 @@ type Metadata struct {
 	AccountTitle        string  `json:"accountTitle"`
 	ViewOffset          int64   `json:"viewOffset"`
 	Media               []Media `json:"Media"`
+}
+type GUID struct {
+	ID string `json:"id"`
 }
 type Media struct {
 	Part []Part `json:"Part"`

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	pathpkg "path"
 	"strconv"
 	"strings"
 
@@ -42,13 +43,19 @@ func (c *Client) PlaylistItems(ctx context.Context, id string) (MetadataContaine
 	return v, e
 }
 func (c *Client) Collections(ctx context.Context, sectionID string) (MetadataContainer, error) {
+	return c.collections(ctx, sectionID, nil)
+}
+func (c *Client) collections(ctx context.Context, sectionID string, q url.Values) (MetadataContainer, error) {
 	var v MetadataContainer
-	e := c.API.Do(ctx, "GET", "/library/sections/"+url.PathEscape(sectionID)+"/collections", nil, nil, &v)
+	e := c.API.Do(ctx, "GET", "/library/sections/"+url.PathEscape(sectionID)+"/collections", q, nil, &v)
 	return v, e
 }
 func (c *Client) CollectionItems(ctx context.Context, collectionID string) (MetadataContainer, error) {
+	return c.collectionItems(ctx, collectionID, nil)
+}
+func (c *Client) collectionItems(ctx context.Context, collectionID string, q url.Values) (MetadataContainer, error) {
 	var v MetadataContainer
-	e := c.API.Do(ctx, "GET", "/library/collections/"+url.PathEscape(collectionID)+"/items", nil, nil, &v)
+	e := c.API.Do(ctx, "GET", "/library/collections/"+url.PathEscape(collectionID)+"/items", q, nil, &v)
 	return v, e
 }
 func (c *Client) Sections(ctx context.Context) (LibrarySections, error) {
@@ -56,10 +63,41 @@ func (c *Client) Sections(ctx context.Context) (LibrarySections, error) {
 	e := c.API.Do(ctx, "GET", "/library/sections/all", nil, nil, &v)
 	return v, e
 }
+func (c *Client) Section(ctx context.Context, sectionID string) (LibrarySection, error) {
+	var v LibrarySection
+	e := c.API.Do(ctx, "GET", "/library/sections/"+url.PathEscape(sectionID), nil, nil, &v)
+	return v, e
+}
 func (c *Client) Items(ctx context.Context, key string, q url.Values) (MetadataContainer, error) {
 	var v MetadataContainer
 	e := c.API.Do(ctx, "GET", "/library/sections/"+url.PathEscape(key)+"/all", q, nil, &v)
 	return v, e
+}
+
+const thumbProbeLimit int64 = 1024
+
+// ProbeThumb verifies that an internal PMS thumbnail path returns at least one byte.
+func (c *Client) ProbeThumb(ctx context.Context, path string) error {
+	if !IsInternalThumbPath(path) {
+		return fmt.Errorf("invalid thumbnail path")
+	}
+	body, err := c.API.DoRawHeadersLimited(ctx, "GET", path, nil, nil, http.Header{"Range": {"bytes=0-1023"}}, thumbProbeLimit)
+	if err != nil {
+		return fmt.Errorf("thumbnail probe failed")
+	}
+	if len(body) == 0 {
+		return fmt.Errorf("thumbnail probe returned no bytes")
+	}
+	return nil
+}
+
+// IsInternalThumbPath reports whether value is a safe relative PMS thumbnail path.
+func IsInternalThumbPath(path string) bool {
+	parsed, err := url.Parse(path)
+	if err != nil || parsed.Scheme != "" || parsed.Host != "" || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
+		return false
+	}
+	return strings.HasPrefix(pathpkg.Clean(parsed.Path), "/library/")
 }
 
 const sectionItemsPageSize = 100
@@ -98,8 +136,8 @@ func (c *Client) ListSectionItems(ctx context.Context, key string) (MetadataCont
 		}
 		if totalSize == -1 {
 			totalSize = container.TotalSize
-		} else if container.TotalSize < totalSize {
-			return MetadataContainer{}, fmt.Errorf("list section %s: total size decreased from %d to %d", key, totalSize, container.TotalSize)
+		} else if container.TotalSize != totalSize {
+			return MetadataContainer{}, fmt.Errorf("list section %s: total size changed from %d to %d", key, totalSize, container.TotalSize)
 		} else {
 			totalSize = container.TotalSize
 		}
@@ -119,6 +157,82 @@ func (c *Client) ListSectionItems(ctx context.Context, key string) (MetadataCont
 		}
 		if start > container.TotalSize {
 			return MetadataContainer{}, fmt.Errorf("list section %s: offset %d exceeds total size %d", key, start, container.TotalSize)
+		}
+	}
+}
+
+// ListCollections returns every collection in a section after validating complete paging metadata.
+func (c *Client) ListCollections(ctx context.Context, sectionID string) (MetadataContainer, error) {
+	var result MetadataContainer
+	totalSize := -1
+	for start := 0; ; {
+		q := url.Values{"X-Plex-Container-Start": []string{strconv.Itoa(start)}, "X-Plex-Container-Size": []string{strconv.Itoa(sectionItemsPageSize)}}
+		page, err := c.collections(ctx, sectionID, q)
+		if err != nil {
+			return MetadataContainer{}, fmt.Errorf("list collections for section %s at offset %d: %w", sectionID, start, err)
+		}
+		container := page.MediaContainer
+		decoded := len(container.Metadata)
+		if container.Size != decoded || !container.offsetSet || !container.totalSizeSet || container.Offset != start || container.TotalSize < start+container.Size {
+			return MetadataContainer{}, fmt.Errorf("list collections for section %s at offset %d: invalid paging metadata", sectionID, start)
+		}
+		if totalSize >= 0 && container.TotalSize != totalSize {
+			return MetadataContainer{}, fmt.Errorf("list collections for section %s: total size changed", sectionID)
+		}
+		totalSize = container.TotalSize
+		if container.Size == 0 {
+			if start == container.TotalSize {
+				return result, nil
+			}
+			return MetadataContainer{}, fmt.Errorf("list collections for section %s: no progress at offset %d", sectionID, start)
+		}
+		result.MediaContainer.Metadata = append(result.MediaContainer.Metadata, container.Metadata...)
+		result.MediaContainer.Size = len(result.MediaContainer.Metadata)
+		result.MediaContainer.TotalSize = container.TotalSize
+		start += container.Size
+		if start == container.TotalSize {
+			return result, nil
+		}
+		if start > container.TotalSize {
+			return MetadataContainer{}, fmt.Errorf("list collections for section %s: offset exceeds total size", sectionID)
+		}
+	}
+}
+
+// ListCollectionItems returns every collection item after validating complete paging metadata.
+func (c *Client) ListCollectionItems(ctx context.Context, collectionID string) (MetadataContainer, error) {
+	var result MetadataContainer
+	totalSize := -1
+	for start := 0; ; {
+		q := url.Values{"X-Plex-Container-Start": []string{strconv.Itoa(start)}, "X-Plex-Container-Size": []string{strconv.Itoa(sectionItemsPageSize)}}
+		page, err := c.collectionItems(ctx, collectionID, q)
+		if err != nil {
+			return MetadataContainer{}, fmt.Errorf("list collection %s at offset %d: %w", collectionID, start, err)
+		}
+		container := page.MediaContainer
+		decoded := len(container.Metadata)
+		if container.Size != decoded || !container.offsetSet || !container.totalSizeSet || container.Offset != start || container.TotalSize < start+container.Size {
+			return MetadataContainer{}, fmt.Errorf("list collection %s at offset %d: invalid paging metadata", collectionID, start)
+		}
+		if totalSize >= 0 && container.TotalSize != totalSize {
+			return MetadataContainer{}, fmt.Errorf("list collection %s: total size changed", collectionID)
+		}
+		totalSize = container.TotalSize
+		if container.Size == 0 {
+			if start == container.TotalSize {
+				return result, nil
+			}
+			return MetadataContainer{}, fmt.Errorf("list collection %s: no progress at offset %d", collectionID, start)
+		}
+		result.MediaContainer.Metadata = append(result.MediaContainer.Metadata, container.Metadata...)
+		result.MediaContainer.Size = len(result.MediaContainer.Metadata)
+		result.MediaContainer.TotalSize = container.TotalSize
+		start += container.Size
+		if start == container.TotalSize {
+			return result, nil
+		}
+		if start > container.TotalSize {
+			return MetadataContainer{}, fmt.Errorf("list collection %s: offset exceeds total size", collectionID)
 		}
 	}
 }

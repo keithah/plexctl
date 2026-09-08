@@ -96,6 +96,49 @@ appropriately. All report modes issue only PMS read requests (GET) and never
 mutate Plex; the only write an export performs is appending the requested local
 `.csv` or `.jsonl` file.
 
+### Library-maintenance previews
+
+`library maintenance preview` is a read-only, deterministic tabular report of
+library-hygiene **candidates**. It never cleans up, refreshes posters, edits
+metadata, deletes collections, or otherwise changes Plex. Use one of exactly
+four modes:
+
+```bash
+plexctl library maintenance preview --mode empty-collections
+plexctl library maintenance preview --mode duplicates
+plexctl library maintenance preview --mode missing-posters
+plexctl library maintenance preview --mode unmatched
+plexctl library maintenance preview --mode duplicates --section 1
+```
+
+```text
+plexctl library maintenance preview \
+  --mode empty-collections|duplicates|missing-posters|unmatched \
+  [--section SECTION_KEY]
+```
+
+`--mode` is required. `--section` optionally limits the scan to one exact
+library section key; it does not perform a fuzzy name match. The preview does
+not support `--json` and writes no output files or local databases.
+
+- **`empty-collections`** reports a collection only when retrieving its items
+  succeeds and returns exactly zero items. A failed collection request is an
+  error, not an empty collection.
+- **`duplicates`** groups normal media items by normalized title within the same
+  section, regardless of year or media type. Normalization trims Unicode
+  whitespace, collapses internal whitespace, and compares case-insensitively.
+  The original title is retained in output.
+- **`missing-posters`** reports normal media items with no `thumb`, or whose
+  safe relative poster path fails a bounded authenticated `GET` probe with
+  `Range: bytes=0-1023`. A failed probe is reported as `probe_failed`; no full
+  poster is downloaded.
+- **`unmatched`** reports normal media items with no nonempty Plex GUID values.
+
+All preview requests are read-only PMS `GET`s; there are no mutation requests
+and no local persistent writes. Rows are candidates for review, not automatic
+cleanup instructions. Output never includes thumbnail URLs or paths, server
+base URLs, tokens, headers, response bodies, or poster bytes.
+
 ### External Plex sharing
 
 The `sharing` group manages **external** Plex server shares only; Plex Home and
