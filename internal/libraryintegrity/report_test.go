@@ -102,6 +102,24 @@ func TestAnalysisRejectsUnsafeRawPartReferences(t *testing.T) {
 	}
 }
 
+func TestAnalysisRejectsPercentEncodedControlPartReferences(t *testing.T) {
+	for _, reference := range []string{
+		"/library/parts/1/file%00name",
+		"/library/parts/1/file%1Fname",
+		"/library/parts/1/file%C2%85name",
+	} {
+		t.Run(reference, func(t *testing.T) {
+			_, err := Storage([]Item{{
+				Identity: Identity{SectionKey: "1", RatingKey: "bad"},
+				Media:    []Media{{Parts: []Part{{Reference: reference}}}},
+			}})
+			if err == nil {
+				t.Fatal("Storage() accepted an encoded control-character part reference")
+			}
+		})
+	}
+}
+
 func TestAnalysisAcceptsPercentEncodedPartReferences(t *testing.T) {
 	for _, reference := range []string{
 		"/library/parts/1/file%20name.mkv",

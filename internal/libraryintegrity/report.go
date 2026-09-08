@@ -29,7 +29,7 @@ type Media struct{ Parts []Part }
 
 // Part contains caller-only raw part data. Reference is never copied into output.
 // It must be a relative, clean PMS route of the form
-// /library/parts/<part-key>/<file-path>, with neither raw whitespace nor
+// /library/parts/<part-key>/<file-path>, with neither raw nor decoded
 // control characters. Reserved or non-ASCII path characters must be valid
 // percent-encoded UTF-8; queries, fragments, authorities, and schemes are not allowed.
 type Part struct {
@@ -131,6 +131,11 @@ func isSafePartReference(reference string) bool {
 	}
 	if !utf8.ValidString(parsed.Path) || pathpkg.Clean(parsed.Path) != parsed.Path {
 		return false
+	}
+	for _, r := range parsed.Path {
+		if unicode.IsControl(r) {
+			return false
+		}
 	}
 	segments := strings.Split(parsed.Path, "/")
 	return len(segments) >= 5 && segments[0] == "" && segments[1] == "library" && segments[2] == "parts" && segments[3] != "" && segments[4] != ""
