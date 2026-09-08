@@ -19,7 +19,7 @@ func TestAnalyzeRequiresCompleteZeroSetBeforeMarkingEmptyAndDeduplicatesKeys(t *
 	want := []containeraudit.Candidate{
 		{ID: "collection-1", Kind: containeraudit.KindCollection, Title: "Empty", ItemsComplete: true, Empty: true},
 		{ID: "collection-2", Kind: containeraudit.KindCollection, Title: "Incomplete", ItemsComplete: false, Empty: false},
-		{ID: "playlist-1", Kind: containeraudit.KindPlaylist, Title: "Mixed", ItemsComplete: true, ItemRatingKeys: []string{"rk-1", "rk-2"}},
+		{ID: "playlist-1", Kind: containeraudit.KindPlaylist, Title: "Mixed", ItemsComplete: true, ItemRatingKeys: []string{"rk-1", "rk-2"}, DuplicateItemRatingKeys: []string{"rk-2"}},
 	}
 	if !reflect.DeepEqual(report.Candidates, want) {
 		t.Fatalf("Candidates = %#v, want %#v", report.Candidates, want)

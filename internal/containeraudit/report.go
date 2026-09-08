@@ -30,11 +30,12 @@ type Container struct {
 
 // Candidate is a safe report record. It intentionally contains no source location or raw provider identifiers.
 type Candidate struct {
-	ID, Title      string
-	Kind           Kind
-	ItemsComplete  bool
-	Empty          bool
-	ItemRatingKeys []string
+	ID, Title               string
+	Kind                    Kind
+	ItemsComplete           bool
+	Empty                   bool
+	ItemRatingKeys          []string
+	DuplicateItemRatingKeys []string
 }
 
 // Report contains stable container-audit candidates.
@@ -54,24 +55,29 @@ func Analyze(containers []Container) (Report, error) {
 			return Report{}, fmt.Errorf("container %d has duplicate identifier", index)
 		}
 		containerIDs[container.ID] = struct{}{}
-		keys := make(map[string]struct{}, len(container.Items))
+		keys := make(map[string]int, len(container.Items))
 		for itemIndex, item := range container.Items {
 			if strings.TrimSpace(item.RatingKey) == "" {
 				return Report{}, fmt.Errorf("container %d item %d has blank rating key", index, itemIndex)
 			}
-			keys[item.RatingKey] = struct{}{}
+			keys[item.RatingKey]++
 		}
 		var itemKeys []string
+		var duplicateKeys []string
 		if len(keys) != 0 {
 			itemKeys = make([]string, 0, len(keys))
 			for key := range keys {
 				itemKeys = append(itemKeys, key)
+				if keys[key] > 1 {
+					duplicateKeys = append(duplicateKeys, key)
+				}
 			}
 			sort.Strings(itemKeys)
+			sort.Strings(duplicateKeys)
 		}
 		candidates = append(candidates, Candidate{
 			ID: container.ID, Title: container.Title, Kind: container.Kind, ItemsComplete: container.ItemsComplete,
-			Empty: container.ItemsComplete && len(itemKeys) == 0, ItemRatingKeys: itemKeys,
+			Empty: container.ItemsComplete && len(itemKeys) == 0, ItemRatingKeys: itemKeys, DuplicateItemRatingKeys: duplicateKeys,
 		})
 	}
 	sort.Slice(candidates, func(i, j int) bool {

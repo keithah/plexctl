@@ -50,9 +50,10 @@ const (
 // StorageSummary totals declared part storage per section. KnownPartCount makes
 // a known zero-byte part distinguishable from an omitted, unknown size.
 type StorageSummary struct {
-	SectionKey, SectionTitle         string
-	KnownPartCount, UnknownPartCount int
-	KnownBytes                       int64
+	SectionKey, SectionTitle              string
+	EligibleItemCount, DeclaredMediaCount int
+	KnownPartCount, UnknownPartCount      int
+	KnownBytes                            int64
 }
 
 // Storage summarizes known and unknown declared part sizes by section.
@@ -66,6 +67,11 @@ func Storage(items []Item) ([]StorageSummary, error) {
 		if !ok {
 			summary = StorageSummary{SectionKey: item.Identity.SectionKey, SectionTitle: item.Identity.SectionTitle}
 		}
+		if summary.EligibleItemCount == math.MaxInt || len(item.Media) > math.MaxInt-summary.DeclaredMediaCount {
+			return nil, fmt.Errorf("declared record total overflows int")
+		}
+		summary.EligibleItemCount++
+		summary.DeclaredMediaCount += len(item.Media)
 		for _, media := range item.Media {
 			for _, part := range media.Parts {
 				if part.DeclaredBytes == nil {
@@ -149,6 +155,7 @@ const (
 	StatusDuplicate   Status = "duplicate"
 	StatusNoMedia     Status = "no_media"
 	StatusNoParts     Status = "no_parts"
+	StatusZeroBytes   Status = "zero_bytes"
 )
 
 // Candidate is a safe report record. Fingerprint is the first 16 lowercase hex characters of SHA-256(Reference).
@@ -223,6 +230,12 @@ func SuspiciousParts(items []Item) ([]Candidate, error) {
 		for _, media := range item.Media {
 			if len(media.Parts) == 0 {
 				result = append(result, Candidate{Identity: item.Identity, Status: StatusNoParts})
+				continue
+			}
+			for _, part := range media.Parts {
+				if part.DeclaredBytes != nil && *part.DeclaredBytes == 0 {
+					result = append(result, Candidate{Identity: item.Identity, Fingerprint: fingerprint(part.Reference), Status: StatusZeroBytes})
+				}
 			}
 		}
 	}

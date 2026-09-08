@@ -886,8 +886,8 @@ func libraryIntegrityCmd(o *options) *cobra.Command {
 		if err := readOnlyAuditRejectJSON(cmd); err != nil {
 			return err
 		}
-		if mode != "storage" && mode != "unavailable" && mode != "duplicates" && mode != "suspicious" {
-			return errors.New("--mode must be one of storage, unavailable, duplicates, or suspicious")
+		if mode != "storage" && mode != "unavailable-media" && mode != "duplicate-parts" && mode != "suspicious-parts" {
+			return errors.New("--mode must be one of storage, unavailable-media, duplicate-parts, or suspicious-parts")
 		}
 		if cmd.Flags().Changed("section") && strings.TrimSpace(section) == "" {
 			return errors.New("--section must not be blank")
@@ -905,7 +905,7 @@ func libraryIntegrityCmd(o *options) *cobra.Command {
 		if _, err := libraryintegrity.Storage(items); err != nil {
 			return err
 		}
-		if mode == "unavailable" {
+		if mode == "unavailable-media" {
 			probeFailed := false
 			for i := range items {
 				for j := range items[i].Media {
@@ -930,19 +930,19 @@ func libraryIntegrityCmd(o *options) *cobra.Command {
 				return e
 			}
 			printIntegrityStorage(rows)
-		case "unavailable":
+		case "unavailable-media":
 			rows, e := libraryintegrity.UnavailableParts(items)
 			if e != nil {
 				return e
 			}
 			printIntegrityCandidates(rows)
-		case "duplicates":
+		case "duplicate-parts":
 			rows, e := libraryintegrity.DuplicateParts(items)
 			if e != nil {
 				return e
 			}
 			printIntegrityCandidates(rows)
-		case "suspicious":
+		case "suspicious-parts":
 			rows, e := libraryintegrity.SuspiciousParts(items)
 			if e != nil {
 				return e
@@ -951,7 +951,7 @@ func libraryIntegrityCmd(o *options) *cobra.Command {
 		}
 		return nil
 	}}
-	report.Flags().StringVar(&mode, "mode", "", "storage, unavailable, duplicates, or suspicious")
+	report.Flags().StringVar(&mode, "mode", "", "storage, unavailable-media, duplicate-parts, or suspicious-parts")
 	report.Flags().StringVar(&section, "section", "", "restrict to an exact library section key")
 	cmd.AddCommand(readOnlyAuditCommand(report))
 	return cmd
@@ -988,9 +988,9 @@ func libraryIntegrityItems(ctx context.Context, client *pms.Client, selected str
 	return out, nil
 }
 func printIntegrityStorage(rows []libraryintegrity.StorageSummary) {
-	fmt.Println("section_key\tsection_title\tknown_part_count\tunknown_part_count\tknown_bytes")
+	fmt.Println("section_key	section_title	eligible_item_count	declared_media_record_count	known_part_count	unknown_part_count	known_bytes")
 	for _, row := range rows {
-		fmt.Println(libraryMaintenanceTSVRow(row.SectionKey, row.SectionTitle, strconv.Itoa(row.KnownPartCount), strconv.Itoa(row.UnknownPartCount), strconv.FormatInt(row.KnownBytes, 10)))
+		fmt.Println(libraryMaintenanceTSVRow(row.SectionKey, row.SectionTitle, strconv.Itoa(row.EligibleItemCount), strconv.Itoa(row.DeclaredMediaCount), strconv.Itoa(row.KnownPartCount), strconv.Itoa(row.UnknownPartCount), strconv.FormatInt(row.KnownBytes, 10)))
 	}
 }
 func printIntegrityCandidates(rows []libraryintegrity.Candidate) {
@@ -1017,9 +1017,12 @@ func sessionsDiagnosticsCmd(o *options) *cobra.Command {
 		}
 		sessions := make([]sessiondiagnostics.Session, 0, len(listed.MediaContainer.Metadata))
 		for _, s := range listed.MediaContainer.Metadata {
-			d := sessiondiagnostics.DecisionUnknown
-			if s.TranscodeSession.Key != "" {
-				d = sessiondiagnostics.DecisionTranscode
+			if len(s.Media) != 1 || s.Media[0].VideoDecision == nil || s.Media[0].AudioDecision == nil || s.Media[0].SubtitleDecision == nil {
+				return errors.New("session has malformed media decisions")
+			}
+			d, err := sessiondiagnostics.DecisionFromMediaDecisions(*s.Media[0].VideoDecision, *s.Media[0].AudioDecision, *s.Media[0].SubtitleDecision)
+			if err != nil {
+				return err
 			}
 			sessions = append(sessions, sessiondiagnostics.Session{SessionID: s.Session.ID, Title: s.Title, GrandparentTitle: s.GrandparentTitle, ParentTitle: s.ParentTitle, UserID: s.User.ID, UserTitle: s.User.Title, ClientID: s.Player.MachineIdentifier, ClientTitle: s.Player.Title, ClientPlatform: s.Player.Platform, Decision: d})
 		}
@@ -1130,6 +1133,10 @@ func playlistsAuditCmd(o *options) *cobra.Command {
 func collectionsAuditCmd(o *options) *cobra.Command {
 	var section string
 	cmd := containerAuditCommand(o, "audit", func(ctx context.Context, c *pms.Client) ([]containeraudit.Container, error) {
+		scope, err := c.Section(ctx, section)
+		if err != nil || strings.TrimSpace(scope.MediaContainer.Key) == "" || scope.MediaContainer.Key != section {
+			return nil, errors.New("collection audit section scope is malformed")
+		}
 		listed, err := c.ListCollections(ctx, section)
 		if err != nil {
 			return nil, err
@@ -1186,9 +1193,9 @@ func containerAuditCommand(o *options, use string, list func(context.Context, *p
 	return readOnlyAuditCommand(cmd)
 }
 func printContainerAudit(r containeraudit.Report) {
-	fmt.Println("container_id\ttitle\tkind\titems_complete\tempty\titem_rating_keys")
+	fmt.Println("container_id	title	kind	items_complete	empty	item_rating_keys	duplicate_item_rating_keys")
 	for _, x := range r.Candidates {
-		fmt.Println(libraryMaintenanceTSVRow(x.ID, x.Title, string(x.Kind), strconv.FormatBool(x.ItemsComplete), strconv.FormatBool(x.Empty), strings.Join(x.ItemRatingKeys, ",")))
+		fmt.Println(libraryMaintenanceTSVRow(x.ID, x.Title, string(x.Kind), strconv.FormatBool(x.ItemsComplete), strconv.FormatBool(x.Empty), strings.Join(x.ItemRatingKeys, ","), strings.Join(x.DuplicateItemRatingKeys, ",")))
 	}
 }
 

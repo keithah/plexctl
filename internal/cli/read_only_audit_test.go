@@ -109,14 +109,19 @@ func TestReadOnlyAuditBuiltCLIAcceptance(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{"library", "integrity", "report", "--mode", "storage"}, "section_key\tsection_title\tknown_part_count\tunknown_part_count\tknown_bytes\n7\tFilms\\u009B\t1\t0\t10\n"},
-		{[]string{"library", "integrity", "report", "--mode", "unavailable"}, "section_key	section_title	rating_key	title	part_fingerprint	status\n"},
-		{[]string{"library", "integrity", "report", "--mode", "duplicates"}, "section_key	section_title	rating_key	title	part_fingerprint	status\n"},
-		{[]string{"library", "integrity", "report", "--mode", "suspicious"}, "section_key	section_title	rating_key	title	part_fingerprint	status\n"},
-		{[]string{"sessions", "diagnostics"}, "session_id\ttitle\tgrandparent_title\tparent_title\tuser_id\tuser_title\tclient_id\tclient_title\tclient_platform\tdecision\ns1\tMovie\\tTitle\t\t\tu1\tUser\tc1\tClient\tPlatform\ttranscode\n\ndecision\tcount\ntranscode\t1\n"},
+		{[]string{"library", "integrity", "report", "--mode", "storage"}, "section_key	section_title	eligible_item_count	declared_media_record_count	known_part_count	unknown_part_count	known_bytes\n7	Films\\u009B	1	1	1	0	10\n"},
+		{[]string{"library", "integrity", "report", "--mode", "unavailable-media"}, "section_key	section_title	rating_key	title	part_fingerprint	status\n"},
+		{[]string{"library", "integrity", "report", "--mode", "duplicate-parts"}, "section_key	section_title	rating_key	title	part_fingerprint	status\n"},
+		{[]string{"library", "integrity", "report", "--mode", "suspicious-parts"}, "section_key	section_title	rating_key	title	part_fingerprint	status\n"},
+		{[]string{"sessions", "diagnostics"}, `session_id	title	grandparent_title	parent_title	user_id	user_title	client_id	client_title	client_platform	decision
+s1	Movie Title			u1	User	c1	Client	Platform	direct_play
+
+decision	count
+direct_play	1
+`},
 		{[]string{"server", "maintenance", "status"}, "activity_id\ttype\ttitle\tprogress\tcancellable\na1\trefresh\tActivity\t0.5\ttrue\n\ntask_id\ttitle\tschedule\tenabled\tinterval\nt1\tTask\tdaily\ttrue\t60\n\ncan_install\tversion\trelease_date\nfalse\t1.2.3\t2026-01-01\n"},
-		{[]string{"playlists", "audit"}, "container_id\ttitle\tkind\titems_complete\tempty\titem_rating_keys\np1\tPlaylist\\nTitle\tplaylist\ttrue\tfalse\tm1\n"},
-		{[]string{"collections", "audit", "--section", "7"}, "container_id\ttitle\tkind\titems_complete\tempty\titem_rating_keys\nc1\tCollection\tcollection\ttrue\ttrue\t\n"},
+		{[]string{"playlists", "audit"}, "container_id	title	kind	items_complete	empty	item_rating_keys	duplicate_item_rating_keys\np1	Playlist\\nTitle	playlist	true	false	m1	\n"},
+		{[]string{"collections", "audit", "--section", "7"}, "container_id	title	kind	items_complete	empty	item_rating_keys	duplicate_item_rating_keys\nc1	Collection	collection	true	true		\n"},
 	}
 	for _, tc := range cases {
 		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
@@ -140,6 +145,24 @@ func TestReadOnlyAuditBuiltCLIAcceptance(t *testing.T) {
 		if request.path == readOnlyAuditPart && request.range_ != "bytes=0-1023" {
 			t.Errorf("part range = %q", request.range_)
 		}
+	}
+	wantCollectionSequence := []string{"/library/sections/7", "/library/sections/7/collections", "/library/collections/c1/items"}
+	foundCollectionSequence := false
+	for i := 0; i+len(wantCollectionSequence) <= len(*requests); i++ {
+		matches := true
+		for j, want := range wantCollectionSequence {
+			if (*requests)[i+j].path != want {
+				matches = false
+				break
+			}
+		}
+		if matches {
+			foundCollectionSequence = true
+			break
+		}
+	}
+	if !foundCollectionSequence {
+		t.Fatalf("collection scope request sequence missing from %#v", *requests)
 	}
 }
 
@@ -178,7 +201,7 @@ func TestReadOnlyAuditBuiltCLIIntegritySectionScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run: %v\n%s", err, output)
 	}
-	const want = "section_key	section_title	known_part_count	unknown_part_count	known_bytes\n7	Selected	1	0	10\n"
+	const want = "section_key	section_title	eligible_item_count	declared_media_record_count	known_part_count	unknown_part_count	known_bytes\n7	Selected	1	1	1	0	10\n"
 	if got := string(output); got != want {
 		t.Fatalf("output = %q, want %q", got, want)
 	}
@@ -316,13 +339,15 @@ func readOnlyAuditFixture(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/library/sections/all":
 		fmt.Fprint(w, `{"MediaContainer":{"size":1,"Directory":[{"key":"7","title":"Films\u009B","type":"movie"}]}}`)
+	case "/library/sections/7":
+		fmt.Fprint(w, `{"MediaContainer":{"key":"7","title1":"Films","type":"movie"}}`)
 	case "/library/sections/7/all":
 		fmt.Fprint(w, `{"MediaContainer":{"size":1,"offset":0,"totalSize":1,"Metadata":[{"ratingKey":"m1","title":"Movie\tTitle","Media":[{"Part":[{"key":"/library/parts/opaque/file-name-sentinel.mkv","size":10}]}]}]}}`)
 	case readOnlyAuditPart:
 		w.WriteHeader(http.StatusPartialContent)
 		_, _ = w.Write([]byte("x"))
 	case "/status/sessions":
-		fmt.Fprint(w, `{"MediaContainer":{"size":1,"Metadata":[{"session":{"id":"s1"},"title":"Movie\tTitle","User":{"id":"u1","title":"User"},"Player":{"machineIdentifier":"c1","title":"Client","platform":"Platform"},"TranscodeSession":{"key":"x"}}]}}`)
+		fmt.Fprint(w, `{"MediaContainer":{"size":1,"Metadata":[{"session":{"id":"s1"},"title":"Movie Title","User":{"id":"u1","title":"User"},"Player":{"machineIdentifier":"c1","title":"Client","platform":"Platform"},"Media":[{"videoDecision":"directplay","audioDecision":"directplay","subtitleDecision":"directplay"}]}]}}`)
 	case "/activities":
 		fmt.Fprint(w, `{"MediaContainer":{"size":1,"Activity":[{"uuid":"a1","type":"refresh","title":"Activity","progress":0.5,"cancellable":true}]}}`)
 	case "/butler":

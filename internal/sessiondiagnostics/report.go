@@ -85,3 +85,27 @@ func classify(decision Decision) Decision {
 		return DecisionUnknown
 	}
 }
+
+// DecisionFromMediaDecisions validates documented per-stream PMS decisions and
+// returns their deterministic session-level delivery classification.
+func DecisionFromMediaDecisions(video, audio, subtitles string) (Decision, error) {
+	decisions := []string{video, audio, subtitles}
+	for _, decision := range decisions {
+		switch decision {
+		case "directplay", "copy", "transcode":
+		default:
+			return DecisionUnknown, fmt.Errorf("invalid media decision")
+		}
+	}
+	for _, decision := range decisions {
+		if decision == "transcode" {
+			return DecisionTranscode, nil
+		}
+	}
+	for _, decision := range decisions {
+		if decision == "copy" {
+			return DecisionDirectStream, nil
+		}
+	}
+	return DecisionDirectPlay, nil
+}

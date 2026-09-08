@@ -205,6 +205,16 @@ type Session struct {
 	User             SessionUser      `json:"User"`
 	Player           SessionPlayer    `json:"Player"`
 	TranscodeSession TranscodeSession `json:"TranscodeSession"`
+	Media            []SessionMedia   `json:"Media"`
+}
+
+// SessionMedia contains the documented per-stream delivery decisions from an
+// active-session response. Pointers preserve omission so diagnostics can fail
+// closed rather than treating malformed metadata as a delivery state.
+type SessionMedia struct {
+	VideoDecision    *string `json:"videoDecision"`
+	AudioDecision    *string `json:"audioDecision"`
+	SubtitleDecision *string `json:"subtitleDecision"`
 }
 
 type SessionUser struct {
@@ -232,6 +242,27 @@ type ActivitiesContainer struct {
 		Size     int        `json:"size"`
 		Activity []Activity `json:"Activity"`
 	} `json:"MediaContainer"`
+	mediaContainerSet bool
+}
+
+func (c *ActivitiesContainer) UnmarshalJSON(data []byte) error {
+	type wire ActivitiesContainer
+	var decoded struct {
+		MediaContainer *json.RawMessage `json:"MediaContainer"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	if decoded.MediaContainer == nil {
+		return nil
+	}
+	var value wire
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	*c = ActivitiesContainer(value)
+	c.mediaContainerSet = true
+	return nil
 }
 
 type Activity struct {
@@ -247,6 +278,27 @@ type ButlerContainer struct {
 		Size       int          `json:"size"`
 		ButlerTask []ButlerTask `json:"ButlerTask"`
 	} `json:"MediaContainer"`
+	mediaContainerSet bool
+}
+
+func (c *ButlerContainer) UnmarshalJSON(data []byte) error {
+	type wire ButlerContainer
+	var decoded struct {
+		MediaContainer *json.RawMessage `json:"MediaContainer"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	if decoded.MediaContainer == nil {
+		return nil
+	}
+	var value wire
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	*c = ButlerContainer(value)
+	c.mediaContainerSet = true
+	return nil
 }
 
 type ButlerTask struct {
@@ -258,7 +310,28 @@ type ButlerTask struct {
 }
 
 type UpdaterStatusContainer struct {
-	MediaContainer UpdaterStatus `json:"MediaContainer"`
+	MediaContainer    UpdaterStatus `json:"MediaContainer"`
+	mediaContainerSet bool
+}
+
+func (c *UpdaterStatusContainer) UnmarshalJSON(data []byte) error {
+	type wire UpdaterStatusContainer
+	var decoded struct {
+		MediaContainer *json.RawMessage `json:"MediaContainer"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	if decoded.MediaContainer == nil {
+		return nil
+	}
+	var value wire
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	*c = UpdaterStatusContainer(value)
+	c.mediaContainerSet = true
+	return nil
 }
 
 type UpdaterStatus struct {

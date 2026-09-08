@@ -485,18 +485,33 @@ func (c *Client) Sessions(ctx context.Context) (SessionContainer, error) {
 func (c *Client) Activities(ctx context.Context) (ActivitiesContainer, error) {
 	var v ActivitiesContainer
 	e := c.API.Do(ctx, "GET", "/activities", nil, nil, &v)
+	if e == nil && !v.mediaContainerSet {
+		e = fmt.Errorf("activities response missing MediaContainer")
+	}
+	if e == nil && v.MediaContainer.Size != len(v.MediaContainer.Activity) {
+		e = fmt.Errorf("activities response declared size inconsistent with decoded activities")
+	}
 	return v, e
 }
 
 func (c *Client) ButlerTasks(ctx context.Context) (ButlerContainer, error) {
 	var v ButlerContainer
 	e := c.API.Do(ctx, "GET", "/butler", nil, nil, &v)
+	if e == nil && !v.mediaContainerSet {
+		e = fmt.Errorf("butler response missing MediaContainer")
+	}
+	if e == nil && v.MediaContainer.Size != len(v.MediaContainer.ButlerTask) {
+		e = fmt.Errorf("butler response declared size inconsistent with decoded tasks")
+	}
 	return v, e
 }
 
 func (c *Client) UpdaterStatus(ctx context.Context) (UpdaterStatusContainer, error) {
 	var v UpdaterStatusContainer
 	e := c.API.Do(ctx, "GET", "/updater/status", nil, nil, &v)
+	if e == nil && !v.mediaContainerSet {
+		e = fmt.Errorf("updater status response missing MediaContainer")
+	}
 	return v, e
 }
 

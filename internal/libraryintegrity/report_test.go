@@ -13,7 +13,7 @@ func TestStorageSummarizesKnownAndUnknownPartSizes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []StorageSummary{{SectionKey: "1", SectionTitle: "Films", KnownPartCount: 1}, {SectionKey: "2", SectionTitle: "TV", KnownPartCount: 1, KnownBytes: 1, UnknownPartCount: 1}}
+	want := []StorageSummary{{SectionKey: "1", SectionTitle: "Films", EligibleItemCount: 1, DeclaredMediaCount: 1, KnownPartCount: 1}, {SectionKey: "2", SectionTitle: "TV", EligibleItemCount: 1, DeclaredMediaCount: 1, KnownPartCount: 1, KnownBytes: 1, UnknownPartCount: 1}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %#v want %#v", got, want)
 	}
@@ -47,12 +47,13 @@ func TestDuplicatePartsUsesOpaqueFingerprintWithoutPath(t *testing.T) {
 	}
 }
 func TestSuspiciousPartsClassifiesMalformedMedia(t *testing.T) {
-	items := []Item{{Identity: Identity{SectionKey: "2", RatingKey: "no-media"}}, {Identity: Identity{SectionKey: "1", RatingKey: "no-parts"}, Media: []Media{{}}}}
+	zero := int64(0)
+	items := []Item{{Identity: Identity{SectionKey: "2", RatingKey: "no-media"}}, {Identity: Identity{SectionKey: "1", RatingKey: "no-parts"}, Media: []Media{{}}}, {Identity: Identity{SectionKey: "1", RatingKey: "zero"}, Media: []Media{{Parts: []Part{{Reference: "/library/parts/1/zero", DeclaredBytes: &zero}}}}}}
 	got, err := SuspiciousParts(items)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Candidate{{Identity: items[1].Identity, Status: StatusNoParts}, {Identity: items[0].Identity, Status: StatusNoMedia}}
+	want := []Candidate{{Identity: items[1].Identity, Status: StatusNoParts}, {Identity: items[2].Identity, Fingerprint: "7b3be6deaca64ef9", Status: StatusZeroBytes}, {Identity: items[0].Identity, Status: StatusNoMedia}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %#v want %#v", got, want)
 	}

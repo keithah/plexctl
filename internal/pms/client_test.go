@@ -122,6 +122,22 @@ func TestSessionModels(t *testing.T) {
 	}
 }
 
+func TestMaintenanceEndpointsRejectMissingMediaContainer(t *testing.T) {
+	for name, call := range map[string]func(*Client) error{
+		"activities": func(c *Client) error { _, err := c.Activities(context.Background()); return err },
+		"butler":     func(c *Client) error { _, err := c.ButlerTasks(context.Background()); return err },
+		"updater":    func(c *Client) error { _, err := c.UpdaterStatus(context.Background()); return err },
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, _, done := recorder(t, `{}`)
+			defer done()
+			if err := call(c); err == nil {
+				t.Fatal("missing MediaContainer succeeded")
+			}
+		})
+	}
+}
+
 func TestProbeMediaSupportsMusicAndIgnoresRange(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

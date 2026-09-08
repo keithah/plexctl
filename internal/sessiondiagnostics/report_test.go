@@ -54,3 +54,32 @@ func TestAnalyzeRejectsDuplicateSessionIdentity(t *testing.T) {
 		t.Fatal("Analyze() succeeded for duplicate session identity")
 	}
 }
+
+func TestDecisionFromMediaDecisionsClassifiesDocumentedDeliveryStates(t *testing.T) {
+	tests := []struct {
+		name                    string
+		video, audio, subtitles string
+		want                    sessiondiagnostics.Decision
+	}{
+		{"direct play", "directplay", "directplay", "directplay", sessiondiagnostics.DecisionDirectPlay},
+		{"direct stream", "copy", "copy", "directplay", sessiondiagnostics.DecisionDirectStream},
+		{"transcode", "transcode", "copy", "directplay", sessiondiagnostics.DecisionTranscode},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := sessiondiagnostics.DecisionFromMediaDecisions(tt.video, tt.audio, tt.subtitles)
+			if err != nil || got != tt.want {
+				t.Fatalf("DecisionFromMediaDecisions() = %q, %v; want %q, nil", got, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestDecisionFromMediaDecisionsRejectsMalformedValues(t *testing.T) {
+	if _, err := sessiondiagnostics.DecisionFromMediaDecisions("", "copy", "directplay"); err == nil {
+		t.Fatal("missing decision succeeded")
+	}
+	if _, err := sessiondiagnostics.DecisionFromMediaDecisions("directplay", "bogus", "directplay"); err == nil {
+		t.Fatal("unknown decision succeeded")
+	}
+}

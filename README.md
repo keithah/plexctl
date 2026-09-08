@@ -147,7 +147,7 @@ JSONL, database, cache, snapshot, or other local artifact, and use authenticated
 PMS `GET` requests only:
 
 ```bash
-plexctl library integrity report --mode storage|unavailable|duplicates|suspicious [--section SECTION_KEY]
+plexctl library integrity report --mode storage|unavailable-media|duplicate-parts|suspicious-parts [--section SECTION_KEY]
 plexctl sessions diagnostics
 plexctl server maintenance status
 plexctl playlists audit
@@ -156,16 +156,15 @@ plexctl collections audit --section SECTION_KEY
 
 `library integrity report` requires exactly one `--mode`:
 
-- **`storage`** prints per-section counts for declared media parts and known
-  declared bytes. Missing byte sizes remain unknown rather than being treated as
-  zero.
-- **`unavailable`** checks declared media parts with a safe PMS-relative,
+- **`storage`** prints per-section eligible-item, declared-media-record, declared-part,
+  and known-byte counts. Missing byte sizes remain unknown rather than being treated as zero.
+- **`unavailable-media`** checks declared media parts with a safe PMS-relative,
   authenticated `GET` probe. Each probe requests `Range: bytes=0-1023`, consumes
   at most 1024 bytes even if PMS ignores the range, and never downloads a full
   media file.
-- **`duplicates`** identifies repeated safe part paths through a deterministic
+- **`duplicate-parts`** identifies repeated safe part paths through a deterministic
   opaque fingerprint; it never prints the underlying path.
-- **`suspicious`** identifies malformed media declarations, including missing
+- **`suspicious-parts`** identifies malformed media declarations, including missing
   media or part data, unsafe or blank part references, and declared zero-byte
   parts. Intentionally omitted sizes remain `size_unknown` rather than guessed.
 
@@ -178,7 +177,7 @@ no audit-specific positional arguments or flags. `sessions diagnostics` prints
 active-session metadata plus stable decision-state totals. `server maintenance status` reports
 current activities, Butler task configuration, and the updater status PMS already
 reports. `playlists audit` and `collections audit` enumerate each container and
-its items, identifying empty containers, duplicate item references, and malformed
+its items, identifying empty containers, explicitly surfaced duplicate item references, and malformed
 or inaccessible references.
 
 Every audit completes validation, required enumeration, and any applicable probe
