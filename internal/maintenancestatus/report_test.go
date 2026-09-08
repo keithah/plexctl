@@ -45,3 +45,16 @@ func TestAnalyzeRejectsBlankActivityOrTaskID(t *testing.T) {
 		}
 	}
 }
+
+func TestAnalyzeRejectsDuplicateActivityOrTaskID(t *testing.T) {
+	for name, snapshot := range map[string]maintenancestatus.Snapshot{
+		"activity": {Activities: []maintenancestatus.Activity{{ID: "activity-1", Title: "First"}, {ID: "activity-1", Title: "Second"}}},
+		"task":     {Tasks: []maintenancestatus.Task{{ID: "task-1", Title: "First"}, {ID: "task-1", Title: "Second"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := maintenancestatus.Analyze(snapshot); err == nil {
+				t.Fatal("Analyze() succeeded for duplicate opaque identity")
+			}
+		})
+	}
+}

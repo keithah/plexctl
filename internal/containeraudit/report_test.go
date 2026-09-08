@@ -36,3 +36,31 @@ func TestAnalyzeRejectsBlankOrIncompleteOpaqueIdentifiers(t *testing.T) {
 		}
 	}
 }
+
+func TestAnalyzeRejectsDuplicateContainerIdentity(t *testing.T) {
+	_, err := containeraudit.Analyze([]containeraudit.Container{
+		{ID: "container-1", Kind: containeraudit.KindPlaylist, Title: "First"},
+		{ID: "container-1", Kind: containeraudit.KindCollection, Title: "Second"},
+	})
+	if err == nil {
+		t.Fatal("Analyze() succeeded for duplicate container identity")
+	}
+}
+
+func TestAnalyzeNormalizesDuplicateItemKeysIndependentlyOfInputOrder(t *testing.T) {
+	first, err := containeraudit.Analyze([]containeraudit.Container{{
+		ID: "container-1", Items: []containeraudit.Item{{RatingKey: "item-2"}, {RatingKey: "item-1"}, {RatingKey: "item-2"}},
+	}})
+	if err != nil {
+		t.Fatalf("Analyze() first error = %v", err)
+	}
+	second, err := containeraudit.Analyze([]containeraudit.Container{{
+		ID: "container-1", Items: []containeraudit.Item{{RatingKey: "item-2"}, {RatingKey: "item-2"}, {RatingKey: "item-1"}},
+	}})
+	if err != nil {
+		t.Fatalf("Analyze() second error = %v", err)
+	}
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("Analyze() reports differ by item input order: first = %#v, second = %#v", first, second)
+	}
+}

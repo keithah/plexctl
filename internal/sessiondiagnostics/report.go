@@ -49,10 +49,15 @@ type Report struct {
 func Analyze(sessions []Session) (Report, error) {
 	rows := make([]Row, 0, len(sessions))
 	counts := make(map[Decision]int)
+	seen := make(map[string]struct{}, len(sessions))
 	for index, session := range sessions {
 		if strings.TrimSpace(session.SessionID) == "" {
 			return Report{}, fmt.Errorf("session %d has blank session identity", index)
 		}
+		if _, exists := seen[session.SessionID]; exists {
+			return Report{}, fmt.Errorf("session %d has duplicate session identity", index)
+		}
+		seen[session.SessionID] = struct{}{}
 		decision := classify(session.Decision)
 		rows = append(rows, Row{
 			SessionID: session.SessionID, Title: session.Title, GrandparentTitle: session.GrandparentTitle, ParentTitle: session.ParentTitle,

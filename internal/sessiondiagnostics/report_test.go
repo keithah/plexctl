@@ -44,3 +44,13 @@ func TestAnalyzeRejectsBlankRequiredSessionIdentity(t *testing.T) {
 		t.Fatal("Analyze() succeeded for blank session identity")
 	}
 }
+
+func TestAnalyzeRejectsDuplicateSessionIdentity(t *testing.T) {
+	_, err := sessiondiagnostics.Analyze([]sessiondiagnostics.Session{
+		{SessionID: "session-1", Title: "First"},
+		{SessionID: "session-1", Title: "Second"},
+	})
+	if err == nil {
+		t.Fatal("Analyze() succeeded for duplicate session identity")
+	}
+}

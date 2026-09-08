@@ -45,10 +45,15 @@ type Report struct {
 // Analyze validates opaque identities, deduplicates item keys, and marks empty only for a complete zero-item set.
 func Analyze(containers []Container) (Report, error) {
 	candidates := make([]Candidate, 0, len(containers))
+	containerIDs := make(map[string]struct{}, len(containers))
 	for index, container := range containers {
 		if strings.TrimSpace(container.ID) == "" {
 			return Report{}, fmt.Errorf("container %d has blank identifier", index)
 		}
+		if _, exists := containerIDs[container.ID]; exists {
+			return Report{}, fmt.Errorf("container %d has duplicate identifier", index)
+		}
+		containerIDs[container.ID] = struct{}{}
 		keys := make(map[string]struct{}, len(container.Items))
 		for itemIndex, item := range container.Items {
 			if strings.TrimSpace(item.RatingKey) == "" {
