@@ -108,6 +108,10 @@ func (c *Client) probePart(ctx context.Context, path string) error {
 	return nil
 }
 
+func (c *Client) ProbeMediaPart(ctx context.Context, path string) error {
+	return c.probePart(ctx, path)
+}
+
 // ProbeThumb verifies that an internal PMS thumbnail path returns at least one byte.
 func (c *Client) ProbeThumb(ctx context.Context, path string) error {
 	if !IsInternalThumbPath(path) {
