@@ -205,6 +205,31 @@ func TestListPlaylistsRejectsChangingTotalSize(t *testing.T) {
 	}
 }
 
+func TestListPlaylistsRejectsDuplicateIdentifierAcrossPages(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/playlists" {
+			http.NotFound(w, r)
+			return
+		}
+		switch r.URL.Query().Get("X-Plex-Container-Start") {
+		case "0":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"size":1,"offset":0,"totalSize":2,"Metadata":[{"ratingKey":"same"}]}}`))
+		case "1":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"size":1,"offset":1,"totalSize":2,"Metadata":[{"ratingKey":"same"}]}}`))
+		default:
+			http.Error(w, "unexpected page", http.StatusNotFound)
+		}
+	}))
+	defer s.Close()
+	a, err := api.New(s.URL, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(a).ListPlaylists(context.Background()); err == nil || !strings.Contains(err.Error(), "duplicate playlist identifier") {
+		t.Fatalf("error = %v, want duplicate playlist identifier error", err)
+	}
+}
+
 func TestListPlaylistItemsRejectsIncompletePages(t *testing.T) {
 	tests := []struct {
 		name string

@@ -102,7 +102,7 @@ func TestReadOnlyAuditBuiltCLIAcceptance(t *testing.T) {
 		t.Fatalf("build: %v\n%s", err, output)
 	}
 	configPath := filepath.Join(t.TempDir(), "config.json")
-	if err := config.Save(configPath, config.Config{Current: "test", Servers: map[string]config.Server{"test": {URL: server.URL, TokenEnv: "READ_ONLY_AUDIT_TOKEN"}}}); err != nil {
+	if err := config.Save(configPath, config.Config{Current: "test", Servers: map[string]config.Server{"test": {URL: server.URL, TokenEnv: "READ_ONLY_AUDIT_TOKEN", InsecureTLS: true}}}); err != nil {
 		t.Fatal(err)
 	}
 	cases := []struct {
@@ -191,7 +191,7 @@ func TestReadOnlyAuditBuiltCLIIntegritySectionScope(t *testing.T) {
 		t.Fatalf("build: %v\n%s", err, output)
 	}
 	configPath := filepath.Join(t.TempDir(), "config.json")
-	if err := config.Save(configPath, config.Config{Current: "test", Servers: map[string]config.Server{"test": {URL: server.URL, TokenEnv: "READ_ONLY_AUDIT_TOKEN"}}}); err != nil {
+	if err := config.Save(configPath, config.Config{Current: "test", Servers: map[string]config.Server{"test": {URL: server.URL, TokenEnv: "READ_ONLY_AUDIT_TOKEN", InsecureTLS: true}}}); err != nil {
 		t.Fatal(err)
 	}
 	cmd := exec.CommandContext(context.Background(), binary, "library", "integrity", "report", "--mode", "storage", "--section", "7")
@@ -232,7 +232,7 @@ func TestReadOnlyAuditBuiltCLIUpstreamErrorsArePrivate(t *testing.T) {
 		t.Fatalf("build: %v\n%s", err, output)
 	}
 	configPath := filepath.Join(t.TempDir(), "config.json")
-	if err := config.Save(configPath, config.Config{Current: "test", Servers: map[string]config.Server{"test": {URL: server.URL, TokenEnv: "READ_ONLY_AUDIT_TOKEN"}}}); err != nil {
+	if err := config.Save(configPath, config.Config{Current: "test", Servers: map[string]config.Server{"test": {URL: server.URL, TokenEnv: "READ_ONLY_AUDIT_TOKEN", InsecureTLS: true}}}); err != nil {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{
@@ -266,10 +266,41 @@ func TestReadOnlyAuditBuiltCLIUpstreamErrorsArePrivate(t *testing.T) {
 	}
 }
 
+func TestReadOnlyAuditBuiltCLIRejectsHTTPConfigurationBeforeRequests(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if got := r.Header.Get("X-Plex-Token"); got != "" {
+			t.Errorf("HTTP audit request exposed token %q", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	readOnlyAuditConfig(t, server.URL)
+	stdout, err := captureReadOnlyAuditStdout(t, func() error {
+		_, err := run(t, "library", "integrity", "report", "--mode", "storage")
+		return err
+	})
+	if err == nil {
+		t.Fatal("HTTP-configured audit succeeded")
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if got := requests; got != 0 {
+		t.Fatalf("HTTP-configured audit made %d requests", got)
+	}
+	for _, forbidden := range []string{server.URL, readOnlyAuditToken} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Fatalf("audit error exposed %q: %q", forbidden, err)
+		}
+	}
+}
+
 func TestReadOnlyAuditFailsClosedWithoutOutput(t *testing.T) {
 	for _, bad := range []string{"malformed-page", "blank-id", "unsafe-part", "failed-probe", "bad-status"} {
 		t.Run(bad, func(t *testing.T) {
-			server, _ := readOnlyAuditServer(t, func(w http.ResponseWriter, r *http.Request) {
+			server, requests := readOnlyAuditServer(t, func(w http.ResponseWriter, r *http.Request) {
 				if bad == "bad-status" && r.URL.Path == "/activities" {
 					http.Error(w, "response-body-sentinel", http.StatusInternalServerError)
 					return
@@ -294,7 +325,7 @@ func TestReadOnlyAuditFailsClosedWithoutOutput(t *testing.T) {
 			})
 			defer server.Close()
 			readOnlyAuditConfig(t, server.URL)
-			args := []string{"library", "integrity", "report", "--mode", "unavailable"}
+			args := []string{"library", "integrity", "report", "--mode", "unavailable-media"}
 			if bad == "blank-id" {
 				args = []string{"playlists", "audit"}
 			}
@@ -308,24 +339,41 @@ func TestReadOnlyAuditFailsClosedWithoutOutput(t *testing.T) {
 			if stdout != "" {
 				t.Fatalf("partial output = %q", stdout)
 			}
+			if bad == "malformed-page" || bad == "unsafe-part" {
+				if !readOnlyAuditRequested(*requests, "/library/sections/7/all") {
+					t.Fatalf("%s handler was not reached: %#v", bad, *requests)
+				}
+			}
+			if bad == "failed-probe" && !readOnlyAuditRequested(*requests, readOnlyAuditPart) {
+				t.Fatalf("failed-probe handler was not reached: %#v", *requests)
+			}
 		})
 	}
+}
+
+func readOnlyAuditRequested(requests []readOnlyAuditRequest, path string) bool {
+	for _, request := range requests {
+		if request.path == path {
+			return true
+		}
+	}
+	return false
 }
 
 func readOnlyAuditServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *[]readOnlyAuditRequest) {
 	t.Helper()
 	var mu sync.Mutex
 	requests := []readOnlyAuditRequest{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		requests = append(requests, readOnlyAuditRequest{r.Method, r.URL.Path, r.Header.Get("Range")})
 		mu.Unlock()
 		if r.Method != http.MethodGet {
-			http.Error(w, "GET only", 405)
+			http.Error(w, "GET only", http.StatusMethodNotAllowed)
 			return
 		}
 		if r.Header.Get("X-Plex-Token") != readOnlyAuditToken {
-			http.Error(w, "bad token", 401)
+			http.Error(w, "bad token", http.StatusUnauthorized)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -370,7 +418,7 @@ func readOnlyAuditConfig(t *testing.T, url string) {
 	t.Helper()
 	t.Setenv("PLEXCTL_CONFIG", filepath.Join(t.TempDir(), "config.json"))
 	t.Setenv("READ_ONLY_AUDIT_TOKEN", readOnlyAuditToken)
-	if err := config.Save(config.Path(), config.Config{Current: "test", Servers: map[string]config.Server{"test": {URL: url, TokenEnv: "READ_ONLY_AUDIT_TOKEN"}}}); err != nil {
+	if err := config.Save(config.Path(), config.Config{Current: "test", Servers: map[string]config.Server{"test": {URL: url, TokenEnv: "READ_ONLY_AUDIT_TOKEN", InsecureTLS: true}}}); err != nil {
 		t.Fatal(err)
 	}
 }

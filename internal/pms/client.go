@@ -213,6 +213,7 @@ func (c *Client) ListSectionItems(ctx context.Context, key string) (MetadataCont
 func (c *Client) ListPlaylists(ctx context.Context) (PlaylistContainer, error) {
 	var result PlaylistContainer
 	totalSize := -1
+	seen := make(map[string]struct{})
 	for start := 0; ; {
 		q := url.Values{"X-Plex-Container-Start": []string{strconv.Itoa(start)}, "X-Plex-Container-Size": []string{strconv.Itoa(sectionItemsPageSize)}}
 		page, err := c.playlists(ctx, q)
@@ -232,6 +233,12 @@ func (c *Client) ListPlaylists(ctx context.Context) (PlaylistContainer, error) {
 			return PlaylistContainer{}, fmt.Errorf("list playlists: total size changed")
 		}
 		totalSize = container.TotalSize
+		for _, playlist := range container.Metadata {
+			if _, exists := seen[playlist.RatingKey]; exists {
+				return PlaylistContainer{}, fmt.Errorf("list playlists: duplicate playlist identifier")
+			}
+			seen[playlist.RatingKey] = struct{}{}
+		}
 		if container.Size == 0 {
 			if start == container.TotalSize {
 				return result, nil
