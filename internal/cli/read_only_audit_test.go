@@ -13,9 +13,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/keithah/plexctl/internal/api"
 	"github.com/keithah/plexctl/internal/config"
+	"github.com/keithah/plexctl/internal/pms"
+	"github.com/spf13/cobra"
 )
 
 const readOnlyAuditToken = "read-only-audit-token-sentinel"
@@ -263,6 +266,106 @@ func TestReadOnlyAuditBuiltCLIUpstreamErrorsArePrivate(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestReadOnlyAuditCommandKeepsClientScopedToConcurrentInvocation(t *testing.T) {
+	tokenA, tokenB := "concurrent-a-token-sentinel", "concurrent-b-token-sentinel"
+	type observedRequest struct{ method, token string }
+	newEndpoint := func(token string) (*httptest.Server, func() []observedRequest) {
+		t.Helper()
+		var mu sync.Mutex
+		var requests []observedRequest
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			requests = append(requests, observedRequest{method: r.Method, token: r.Header.Get("X-Plex-Token")})
+			mu.Unlock()
+			if r.Method != http.MethodGet || r.Header.Get("X-Plex-Token") != token {
+				http.Error(w, "wrong audit client", http.StatusUnauthorized)
+				return
+			}
+			fmt.Fprint(w, `{"MediaContainer":{"size":0,"Metadata":[]}}`)
+		}))
+		return server, func() []observedRequest {
+			mu.Lock()
+			defer mu.Unlock()
+			return append([]observedRequest(nil), requests...)
+		}
+	}
+
+	serverA, requestsA := newEndpoint(tokenA)
+	defer serverA.Close()
+	serverB, requestsB := newEndpoint(tokenB)
+	defer serverB.Close()
+	readOnlyAuditConfig(t, serverA.URL)
+	t.Setenv("READ_ONLY_AUDIT_TOKEN_A", tokenA)
+	t.Setenv("READ_ONLY_AUDIT_TOKEN_B", tokenB)
+	if err := config.Save(config.Path(), config.Config{Current: "test", Servers: map[string]config.Server{
+		"test": {URL: serverA.URL, TokenEnv: "READ_ONLY_AUDIT_TOKEN_A", InsecureTLS: true},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	o := &options{timeout: time.Second}
+	enteredValidation := make(chan struct{})
+	releaseValidation := make(chan struct{})
+	var firstValidation sync.Once
+	readOnlyAuditTestHooks.Lock()
+	readOnlyAuditTestHooks.afterValidation = func() {
+		firstValidation.Do(func() {
+			close(enteredValidation)
+			<-releaseValidation
+		})
+	}
+	readOnlyAuditTestHooks.Unlock()
+	defer func() {
+		readOnlyAuditTestHooks.Lock()
+		readOnlyAuditTestHooks.afterValidation = nil
+		readOnlyAuditTestHooks.Unlock()
+	}()
+
+	enteredHandler := make(chan struct{}, 2)
+	releaseHandlers := make(chan struct{})
+	newCommand := func() *cobra.Command {
+		return readOnlyAuditCommand(o, &cobra.Command{}, func(_ *cobra.Command, _ []string, client *pms.Client) error {
+			enteredHandler <- struct{}{}
+			<-releaseHandlers
+			_, err := client.Sessions(context.Background())
+			return err
+		})
+	}
+	first, second := newCommand(), newCommand()
+	errs := make(chan error, 2)
+	go func() { errs <- first.RunE(first, nil) }()
+	<-enteredValidation
+	if err := config.Save(config.Path(), config.Config{Current: "test", Servers: map[string]config.Server{
+		"test": {URL: serverB.URL, TokenEnv: "READ_ONLY_AUDIT_TOKEN_B", InsecureTLS: true},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	go func() { errs <- second.RunE(second, nil) }()
+	close(releaseValidation)
+	<-enteredHandler
+	<-enteredHandler
+	close(releaseHandlers)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent audit invocation: %v", err)
+		}
+	}
+	for name, expected := range map[string]struct {
+		requests []observedRequest
+		token    string
+	}{
+		"first":  {requests: requestsA(), token: tokenA},
+		"second": {requests: requestsB(), token: tokenB},
+	} {
+		if len(expected.requests) != 1 {
+			t.Fatalf("%s endpoint requests = %#v, want one request", name, expected.requests)
+		}
+		if got := expected.requests[0]; got.method != http.MethodGet || got.token != expected.token {
+			t.Fatalf("%s endpoint request = %#v, want GET with its token", name, got)
+		}
 	}
 }
 
