@@ -28,21 +28,36 @@ func (c *Client) Root(ctx context.Context) (Root, error) {
 }
 func (c *Client) Info(ctx context.Context) (Root, error) { return c.Root(ctx) }
 func (c *Client) Playlists(ctx context.Context) (PlaylistContainer, error) {
+	return c.playlists(ctx, nil)
+}
+func (c *Client) playlists(ctx context.Context, q url.Values) (PlaylistContainer, error) {
 	var v PlaylistContainer
-	e := c.API.Do(ctx, "GET", "/playlists", nil, nil, &v)
+	e := c.API.Do(ctx, "GET", "/playlists", q, nil, &v)
 	return v, e
 }
 func (c *Client) Playlist(ctx context.Context, id string) (PlaylistContainer, error) {
+	if strings.TrimSpace(id) == "" {
+		return PlaylistContainer{}, fmt.Errorf("playlist identifier is blank")
+	}
 	var v PlaylistContainer
 	e := c.API.Do(ctx, "GET", "/playlists/"+url.PathEscape(id), nil, nil, &v)
 	return v, e
 }
 func (c *Client) PlaylistItems(ctx context.Context, id string) (MetadataContainer, error) {
+	if strings.TrimSpace(id) == "" {
+		return MetadataContainer{}, fmt.Errorf("playlist identifier is blank")
+	}
+	return c.playlistItems(ctx, id, nil)
+}
+func (c *Client) playlistItems(ctx context.Context, id string, q url.Values) (MetadataContainer, error) {
 	var v MetadataContainer
-	e := c.API.Do(ctx, "GET", "/playlists/"+url.PathEscape(id)+"/items", nil, nil, &v)
+	e := c.API.Do(ctx, "GET", "/playlists/"+url.PathEscape(id)+"/items", q, nil, &v)
 	return v, e
 }
 func (c *Client) Collections(ctx context.Context, sectionID string) (MetadataContainer, error) {
+	if strings.TrimSpace(sectionID) == "" {
+		return MetadataContainer{}, fmt.Errorf("section identifier is blank")
+	}
 	return c.collections(ctx, sectionID, nil)
 }
 func (c *Client) collections(ctx context.Context, sectionID string, q url.Values) (MetadataContainer, error) {
@@ -51,6 +66,9 @@ func (c *Client) collections(ctx context.Context, sectionID string, q url.Values
 	return v, e
 }
 func (c *Client) CollectionItems(ctx context.Context, collectionID string) (MetadataContainer, error) {
+	if strings.TrimSpace(collectionID) == "" {
+		return MetadataContainer{}, fmt.Errorf("collection identifier is blank")
+	}
 	return c.collectionItems(ctx, collectionID, nil)
 }
 func (c *Client) collectionItems(ctx context.Context, collectionID string, q url.Values) (MetadataContainer, error) {
@@ -76,6 +94,20 @@ func (c *Client) Items(ctx context.Context, key string, q url.Values) (MetadataC
 
 const thumbProbeLimit int64 = 1024
 
+func (c *Client) probePart(ctx context.Context, path string) error {
+	if !IsInternalPartPath(path) {
+		return fmt.Errorf("invalid media part path")
+	}
+	body, err := c.API.DoRawHeadersLimited(ctx, "GET", path, nil, nil, http.Header{"Range": {"bytes=0-1023"}}, thumbProbeLimit)
+	if err != nil {
+		return fmt.Errorf("media part probe failed")
+	}
+	if len(body) == 0 {
+		return fmt.Errorf("media part probe returned no bytes")
+	}
+	return nil
+}
+
 // ProbeThumb verifies that an internal PMS thumbnail path returns at least one byte.
 func (c *Client) ProbeThumb(ctx context.Context, path string) error {
 	if !IsInternalThumbPath(path) {
@@ -100,12 +132,24 @@ func IsInternalThumbPath(path string) bool {
 	return strings.HasPrefix(pathpkg.Clean(parsed.Path), "/library/")
 }
 
+// IsInternalPartPath reports whether value is a safe relative PMS media part path.
+func IsInternalPartPath(path string) bool {
+	parsed, err := url.Parse(path)
+	if err != nil || parsed.Scheme != "" || parsed.Host != "" || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
+		return false
+	}
+	return strings.HasPrefix(pathpkg.Clean(parsed.Path), "/library/parts/")
+}
+
 const sectionItemsPageSize = 100
 
 // ListSectionItems returns all metadata items in a library section using
 // documented container paging. It leaves Items available for legacy callers
 // that need to control the request query themselves.
 func (c *Client) ListSectionItems(ctx context.Context, key string) (MetadataContainer, error) {
+	if strings.TrimSpace(key) == "" {
+		return MetadataContainer{}, fmt.Errorf("section identifier is blank")
+	}
 	var items MetadataContainer
 	var totalSize = -1
 	for start := 0; ; {
@@ -161,8 +205,98 @@ func (c *Client) ListSectionItems(ctx context.Context, key string) (MetadataCont
 	}
 }
 
+// ListPlaylists returns every playlist after validating complete paging metadata.
+func (c *Client) ListPlaylists(ctx context.Context) (PlaylistContainer, error) {
+	var result PlaylistContainer
+	totalSize := -1
+	for start := 0; ; {
+		q := url.Values{"X-Plex-Container-Start": []string{strconv.Itoa(start)}, "X-Plex-Container-Size": []string{strconv.Itoa(sectionItemsPageSize)}}
+		page, err := c.playlists(ctx, q)
+		if err != nil {
+			return PlaylistContainer{}, fmt.Errorf("list playlists at offset %d: %w", start, err)
+		}
+		container := page.MediaContainer
+		if container.Size != len(container.Metadata) || !container.offsetSet || !container.totalSizeSet || container.Offset != start || container.TotalSize < start+container.Size {
+			return PlaylistContainer{}, fmt.Errorf("list playlists at offset %d: invalid paging metadata", start)
+		}
+		for _, playlist := range container.Metadata {
+			if strings.TrimSpace(playlist.RatingKey) == "" {
+				return PlaylistContainer{}, fmt.Errorf("list playlists: blank playlist identifier")
+			}
+		}
+		if totalSize >= 0 && container.TotalSize != totalSize {
+			return PlaylistContainer{}, fmt.Errorf("list playlists: total size changed")
+		}
+		totalSize = container.TotalSize
+		if container.Size == 0 {
+			if start == container.TotalSize {
+				return result, nil
+			}
+			return PlaylistContainer{}, fmt.Errorf("list playlists: no progress at offset %d", start)
+		}
+		result.MediaContainer.Metadata = append(result.MediaContainer.Metadata, container.Metadata...)
+		result.MediaContainer.Size = len(result.MediaContainer.Metadata)
+		result.MediaContainer.TotalSize = container.TotalSize
+		start += container.Size
+		if start == container.TotalSize {
+			return result, nil
+		}
+		if start > container.TotalSize {
+			return PlaylistContainer{}, fmt.Errorf("list playlists: offset exceeds total size")
+		}
+	}
+}
+
+// ListPlaylistItems returns every item in a playlist after validating complete paging metadata.
+func (c *Client) ListPlaylistItems(ctx context.Context, playlistID string) (MetadataContainer, error) {
+	if strings.TrimSpace(playlistID) == "" {
+		return MetadataContainer{}, fmt.Errorf("playlist identifier is blank")
+	}
+	var result MetadataContainer
+	totalSize := -1
+	for start := 0; ; {
+		q := url.Values{"X-Plex-Container-Start": []string{strconv.Itoa(start)}, "X-Plex-Container-Size": []string{strconv.Itoa(sectionItemsPageSize)}}
+		page, err := c.playlistItems(ctx, playlistID, q)
+		if err != nil {
+			return MetadataContainer{}, fmt.Errorf("list playlist %s at offset %d: %w", playlistID, start, err)
+		}
+		container := page.MediaContainer
+		if container.Size != len(container.Metadata) || !container.offsetSet || !container.totalSizeSet || container.Offset != start || container.TotalSize < start+container.Size {
+			return MetadataContainer{}, fmt.Errorf("list playlist %s at offset %d: invalid paging metadata", playlistID, start)
+		}
+		for _, item := range container.Metadata {
+			if strings.TrimSpace(item.RatingKey) == "" {
+				return MetadataContainer{}, fmt.Errorf("list playlist %s: blank item identifier", playlistID)
+			}
+		}
+		if totalSize >= 0 && container.TotalSize != totalSize {
+			return MetadataContainer{}, fmt.Errorf("list playlist %s: total size changed", playlistID)
+		}
+		totalSize = container.TotalSize
+		if container.Size == 0 {
+			if start == container.TotalSize {
+				return result, nil
+			}
+			return MetadataContainer{}, fmt.Errorf("list playlist %s: no progress at offset %d", playlistID, start)
+		}
+		result.MediaContainer.Metadata = append(result.MediaContainer.Metadata, container.Metadata...)
+		result.MediaContainer.Size = len(result.MediaContainer.Metadata)
+		result.MediaContainer.TotalSize = container.TotalSize
+		start += container.Size
+		if start == container.TotalSize {
+			return result, nil
+		}
+		if start > container.TotalSize {
+			return MetadataContainer{}, fmt.Errorf("list playlist %s: offset exceeds total size", playlistID)
+		}
+	}
+}
+
 // ListCollections returns every collection in a section after validating complete paging metadata.
 func (c *Client) ListCollections(ctx context.Context, sectionID string) (MetadataContainer, error) {
+	if strings.TrimSpace(sectionID) == "" {
+		return MetadataContainer{}, fmt.Errorf("section identifier is blank")
+	}
 	var result MetadataContainer
 	totalSize := -1
 	for start := 0; ; {
@@ -201,6 +335,9 @@ func (c *Client) ListCollections(ctx context.Context, sectionID string) (Metadat
 
 // ListCollectionItems returns every collection item after validating complete paging metadata.
 func (c *Client) ListCollectionItems(ctx context.Context, collectionID string) (MetadataContainer, error) {
+	if strings.TrimSpace(collectionID) == "" {
+		return MetadataContainer{}, fmt.Errorf("collection identifier is blank")
+	}
 	var result MetadataContainer
 	totalSize := -1
 	for start := 0; ; {
@@ -339,6 +476,24 @@ func (c *Client) Children(ctx context.Context, key string) (MetadataContainer, e
 func (c *Client) Sessions(ctx context.Context) (SessionContainer, error) {
 	var v SessionContainer
 	e := c.API.Do(ctx, "GET", "/status/sessions", nil, nil, &v)
+	return v, e
+}
+
+func (c *Client) Activities(ctx context.Context) (ActivitiesContainer, error) {
+	var v ActivitiesContainer
+	e := c.API.Do(ctx, "GET", "/activities", nil, nil, &v)
+	return v, e
+}
+
+func (c *Client) ButlerTasks(ctx context.Context) (ButlerContainer, error) {
+	var v ButlerContainer
+	e := c.API.Do(ctx, "GET", "/butler", nil, nil, &v)
+	return v, e
+}
+
+func (c *Client) UpdaterStatus(ctx context.Context) (UpdaterStatusContainer, error) {
+	var v UpdaterStatusContainer
+	e := c.API.Do(ctx, "GET", "/updater/status", nil, nil, &v)
 	return v, e
 }
 

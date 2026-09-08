@@ -52,11 +52,38 @@ type ServerDirectory struct {
 	Count int    `json:"count"`
 }
 type PlaylistContainer struct {
-	MediaContainer struct {
-		Size     int        `json:"size"`
-		Metadata []Playlist `json:"Metadata"`
-	} `json:"MediaContainer"`
+	MediaContainer playlistMediaContainer `json:"MediaContainer"`
 }
+type playlistMediaContainer struct {
+	Size         int `json:"size"`
+	Offset       int `json:"offset"`
+	TotalSize    int `json:"totalSize"`
+	offsetSet    bool
+	totalSizeSet bool
+	Metadata     []Playlist `json:"Metadata"`
+}
+
+func (m *playlistMediaContainer) UnmarshalJSON(data []byte) error {
+	var decoded struct {
+		Size      int        `json:"size"`
+		Offset    *int       `json:"offset"`
+		TotalSize *int       `json:"totalSize"`
+		Metadata  []Playlist `json:"Metadata"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	m.Size, m.Metadata = decoded.Size, decoded.Metadata
+	m.offsetSet, m.totalSizeSet = decoded.Offset != nil, decoded.TotalSize != nil
+	if m.offsetSet {
+		m.Offset = *decoded.Offset
+	}
+	if m.totalSizeSet {
+		m.TotalSize = *decoded.TotalSize
+	}
+	return nil
+}
+
 type Playlist struct {
 	Metadata
 	Composite           string `json:"composite"`
@@ -153,7 +180,10 @@ type Media struct {
 	Part []Part `json:"Part"`
 }
 type Part struct {
-	Key string `json:"key"`
+	Key         string `json:"key"`
+	Size        *int64 `json:"size"`
+	ChangedAt   *int64 `json:"changedAt"`
+	ChangeStamp *int64 `json:"changestamp"`
 }
 type SessionContainer struct {
 	MediaContainer struct {
@@ -165,13 +195,77 @@ type Session struct {
 	Session struct {
 		ID string `json:"id"`
 	} `json:"session"`
-	RatingKey        string `json:"ratingKey"`
-	Type             string `json:"type"`
-	Title            string `json:"title"`
-	GrandparentTitle string `json:"grandparentTitle"`
-	ParentTitle      string `json:"parentTitle"`
-	ViewOffset       int64  `json:"viewOffset"`
-	Duration         int64  `json:"duration"`
+	RatingKey        string           `json:"ratingKey"`
+	Type             string           `json:"type"`
+	Title            string           `json:"title"`
+	GrandparentTitle string           `json:"grandparentTitle"`
+	ParentTitle      string           `json:"parentTitle"`
+	ViewOffset       int64            `json:"viewOffset"`
+	Duration         int64            `json:"duration"`
+	User             SessionUser      `json:"User"`
+	Player           SessionPlayer    `json:"Player"`
+	TranscodeSession TranscodeSession `json:"TranscodeSession"`
+}
+
+type SessionUser struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
+type SessionPlayer struct {
+	MachineIdentifier string `json:"machineIdentifier"`
+	Title             string `json:"title"`
+	Platform          string `json:"platform"`
+	Address           string `json:"address"`
+}
+
+type TranscodeSession struct {
+	Key       string   `json:"key"`
+	Throttled *bool    `json:"throttled"`
+	Complete  *bool    `json:"complete"`
+	Speed     *float64 `json:"speed"`
+	Progress  *float64 `json:"progress"`
+}
+
+type ActivitiesContainer struct {
+	MediaContainer struct {
+		Size     int        `json:"size"`
+		Activity []Activity `json:"Activity"`
+	} `json:"MediaContainer"`
+}
+
+type Activity struct {
+	UUID        string   `json:"uuid"`
+	Type        string   `json:"type"`
+	Title       string   `json:"title"`
+	Progress    *float64 `json:"progress"`
+	Cancellable *bool    `json:"cancellable"`
+}
+
+type ButlerContainer struct {
+	MediaContainer struct {
+		Size       int          `json:"size"`
+		ButlerTask []ButlerTask `json:"ButlerTask"`
+	} `json:"MediaContainer"`
+}
+
+type ButlerTask struct {
+	Name     string `json:"name"`
+	Title    string `json:"title"`
+	Enabled  *bool  `json:"enabled"`
+	Interval *int64 `json:"interval"`
+	Schedule string `json:"schedule"`
+}
+
+type UpdaterStatusContainer struct {
+	MediaContainer UpdaterStatus `json:"MediaContainer"`
+}
+
+type UpdaterStatus struct {
+	CanInstall  *bool  `json:"canInstall"`
+	Version     string `json:"version"`
+	ReleaseDate string `json:"releaseDate"`
+	DownloadURL string `json:"downloadURL"`
 }
 
 type DownloadQueueContainer struct {

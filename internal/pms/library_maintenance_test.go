@@ -189,3 +189,47 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
 }
+
+func TestProbePartSendsBoundedGETAndRejectsUnsafePaths(t *testing.T) {
+	var requests atomic.Int64
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %s, want GET", r.Method)
+		}
+		if r.URL.Path != "/library/parts/1/file" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		if got := r.Header.Get("Range"); got != "bytes=0-1023" {
+			t.Errorf("Range = %q", got)
+		}
+		_, _ = w.Write(make([]byte, 2048))
+	}))
+	defer s.Close()
+
+	client := newProbeClient(t, s.URL, "", nil)
+	if err := client.probePart(context.Background(), "/library/parts/1/file"); err != nil {
+		t.Fatalf("probePart: %v", err)
+	}
+	for _, path := range []string{"", "/library/metadata/1", "/library/../identity", "/library/parts/1/file?download=1", "https://example.invalid/library/parts/1/file"} {
+		if err := client.probePart(context.Background(), path); err == nil {
+			t.Errorf("probePart(%q) succeeded", path)
+		}
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("requests = %d, want 1", got)
+	}
+}
+
+func TestProbePartReadsAtMostConfiguredRange(t *testing.T) {
+	body := &countingReadCloser{remaining: 2048}
+	hc := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: body}, nil
+	})}
+	if err := newProbeClient(t, "http://example.invalid", "", hc).probePart(context.Background(), "/library/parts/1/file"); err != nil {
+		t.Fatalf("probePart: %v", err)
+	}
+	if got := body.read; got > 1024 {
+		t.Fatalf("probe read %d bytes, want at most 1024", got)
+	}
+}
