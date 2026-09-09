@@ -57,6 +57,52 @@ func TestHTTPErrorDoesNotExposeToken(t *testing.T) {
 	}
 }
 
+func TestClientRejectsCrossOriginRedirectBeforeTokenDispatch(t *testing.T) {
+	var targetToken string
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetToken = r.Header.Get("X-Plex-Token")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer target.Close()
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/stolen", http.StatusFound)
+	}))
+	defer origin.Close()
+
+	c, err := New(origin.URL, "redirect-token-sentinel", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.Do(context.Background(), http.MethodGet, "/identity", nil, nil, nil)
+	if err == nil {
+		t.Fatal("cross-origin redirect succeeded")
+	}
+	if targetToken != "" {
+		t.Fatalf("redirect target received token %q", targetToken)
+	}
+}
+
+func TestClientAllowsSameOriginRedirect(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/identity" {
+			http.Redirect(w, r, "/final", http.StatusFound)
+			return
+		}
+		if r.URL.Path != "/final" || r.Header.Get("X-Plex-Token") != "redirect-token-sentinel" {
+			t.Fatalf("unexpected redirect request %s token=%q", r.URL.Path, r.Header.Get("X-Plex-Token"))
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	c, err := New(server.URL, "redirect-token-sentinel", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Do(context.Background(), http.MethodGet, "/identity", nil, nil, nil); err != nil {
+		t.Fatalf("same-origin redirect failed: %v", err)
+	}
+}
+
 func TestTransportErrorRedactsPMSBaseURLAndToken(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

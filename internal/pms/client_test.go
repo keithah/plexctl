@@ -2,9 +2,12 @@ package pms
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -119,6 +122,22 @@ func TestSessionModels(t *testing.T) {
 	}
 }
 
+func TestMaintenanceEndpointsRejectMissingMediaContainer(t *testing.T) {
+	for name, call := range map[string]func(*Client) error{
+		"activities": func(c *Client) error { _, err := c.Activities(context.Background()); return err },
+		"butler":     func(c *Client) error { _, err := c.ButlerTasks(context.Background()); return err },
+		"updater":    func(c *Client) error { _, err := c.UpdaterStatus(context.Background()); return err },
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, _, done := recorder(t, `{}`)
+			defer done()
+			if err := call(c); err == nil {
+				t.Fatal("missing MediaContainer succeeded")
+			}
+		})
+	}
+}
+
 func TestProbeMediaSupportsMusicAndIgnoresRange(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -147,6 +166,63 @@ func TestProbeMediaSupportsMusicAndIgnoresRange(t *testing.T) {
 	if err := New(a).ProbeMedia(context.Background(), "/library/metadata/artist"); err != nil {
 		t.Fatalf("music probe: %v", err)
 	}
+}
+
+func TestProbeMediaValidatesAndBoundsMediaPartProbe(t *testing.T) {
+	t.Run("unsafe part key makes no request", func(t *testing.T) {
+		var requests []string
+		client := newProbeClient(t, "http://example.invalid", "", &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			requests = append(requests, r.URL.RequestURI())
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": {"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"MediaContainer":{"Metadata":[{"type":"movie","Media":[{"Part":[{"key":"/identity"}]}]}]}}`)),
+			}, nil
+		})})
+
+		if err := client.ProbeMedia(context.Background(), "/library/metadata/unsafe"); err == nil {
+			t.Fatal("ProbeMedia succeeded for an unsafe part key")
+		}
+		if got, want := requests, []string{"/library/metadata/unsafe"}; len(got) != len(want) || got[0] != want[0] {
+			t.Fatalf("requests = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("valid part has safe bounded request when range is ignored", func(t *testing.T) {
+		body := &countingReadCloser{remaining: 3 << 20}
+		var partRequest *http.Request
+		client := newProbeClient(t, "http://example.invalid", "", &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			switch r.URL.Path {
+			case "/library/metadata/valid":
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": {"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(`{"MediaContainer":{"Metadata":[{"type":"movie","Media":[{"Part":[{"key":"/library/parts/1/file"}]}]}]}}`)),
+				}, nil
+			case "/library/parts/1/file":
+				partRequest = r
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: body}, nil
+			default:
+				return nil, fmt.Errorf("unexpected request %s", r.URL.RequestURI())
+			}
+		})})
+
+		if err := client.ProbeMedia(context.Background(), "/library/metadata/valid"); err != nil {
+			t.Fatalf("ProbeMedia: %v", err)
+		}
+		if partRequest == nil {
+			t.Fatal("ProbeMedia made no media part request")
+		}
+		if got := partRequest.URL.RawQuery; got != "" {
+			t.Fatalf("part query = %q, want empty", got)
+		}
+		if got := partRequest.Header.Get("Range"); got != "bytes=0-1023" {
+			t.Fatalf("part Range = %q, want bytes=0-1023", got)
+		}
+		if got := body.read; got > 1024 {
+			t.Fatalf("part probe read %d bytes, want at most 1024", got)
+		}
+	})
 }
 
 func TestProbeMediaCycleIsBounded(t *testing.T) {

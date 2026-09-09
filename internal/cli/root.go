@@ -11,12 +11,16 @@ import (
 	"github.com/keithah/plexctl/internal/authstore"
 	"github.com/keithah/plexctl/internal/config"
 	"github.com/keithah/plexctl/internal/connectioncache"
+	"github.com/keithah/plexctl/internal/containeraudit"
 	"github.com/keithah/plexctl/internal/health"
 	"github.com/keithah/plexctl/internal/historyreport"
+	"github.com/keithah/plexctl/internal/libraryintegrity"
 	"github.com/keithah/plexctl/internal/librarymaintenance"
+	"github.com/keithah/plexctl/internal/maintenancestatus"
 	"github.com/keithah/plexctl/internal/monitor"
 	"github.com/keithah/plexctl/internal/plexauth"
 	"github.com/keithah/plexctl/internal/pms"
+	"github.com/keithah/plexctl/internal/sessiondiagnostics"
 	"github.com/spf13/cobra"
 	"net"
 	"net/http"
@@ -27,6 +31,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 )
@@ -53,53 +58,59 @@ func Execute() {
 	}
 }
 func configured(o *options) (*pms.Client, error) {
-	c, e := config.Load(config.Path())
-	if e != nil {
-		return nil, e
+	c, err := config.Load(config.Path())
+	if err != nil {
+		return nil, err
 	}
-	var s config.Server
-	var token string
-	if len(c.ServersV2) > 0 && (o.server != "" || c.CurrentServer != "") {
-		name := o.server
+	resolved, err := resolveConfiguredConnection(c, o.server)
+	if err != nil {
+		return nil, err
+	}
+	token, err := resolved.token()
+	if err != nil {
+		return nil, err
+	}
+	return newPMSClient(resolved.server, token)
+}
+
+type resolvedConnection struct {
+	server       config.Server
+	tokenKey     string
+	useAuthStore bool
+}
+
+func resolveConfiguredConnection(c config.Config, selected string) (resolvedConnection, error) {
+	legacySelected := selected
+	if len(c.ServersV2) > 0 && (selected != "" || c.CurrentServer != "") {
+		name := selected
 		if name == "" {
 			name = c.CurrentServer
 		}
-		p, ok := c.ServersV2[name]
-		if ok {
-			if a, ok := c.Accounts[p.Account]; ok {
-				key := p.TokenKey
-				if key == "" {
-					key = a.TokenKey
-				}
-				token, e = authstore.Get(key)
-			} else {
-				e = fmt.Errorf("account %q is not configured", p.Account)
+		if profile, ok := c.ServersV2[name]; ok {
+			account, ok := c.Accounts[profile.Account]
+			if !ok {
+				return resolvedConnection{}, fmt.Errorf("account %q is not configured", profile.Account)
 			}
-			if e != nil {
-				return nil, e
+			tokenKey := profile.TokenKey
+			if tokenKey == "" {
+				tokenKey = account.TokenKey
 			}
-			s = config.Server{URL: p.URL, InsecureTLS: p.InsecureTLS}
-		} else {
-			_, s, e = c.Resolve(name)
-			if e != nil {
-				return nil, e
-			}
-			token, e = tokenFromEnv(s)
-			if e != nil {
-				return nil, e
-			}
+			return resolvedConnection{server: config.Server{URL: profile.URL, InsecureTLS: profile.InsecureTLS}, tokenKey: tokenKey, useAuthStore: true}, nil
 		}
-	} else {
-		_, s, e = c.Resolve(o.server)
-		if e != nil {
-			return nil, e
-		}
-		token, e = tokenFromEnv(s)
-		if e != nil {
-			return nil, e
-		}
+		legacySelected = name
 	}
-	return newPMSClient(s, token)
+	_, server, err := c.Resolve(legacySelected)
+	if err != nil {
+		return resolvedConnection{}, err
+	}
+	return resolvedConnection{server: server}, nil
+}
+
+func (r resolvedConnection) token() (string, error) {
+	if r.useAuthStore {
+		return authstore.Get(r.tokenKey)
+	}
+	return tokenFromEnv(r.server)
 }
 
 func tokenFromEnv(s config.Server) (string, error) {
@@ -530,6 +541,7 @@ func serverCmd(o *options) *cobra.Command {
 		}
 		return e
 	}})
+	cmd.AddCommand(serverMaintenanceCmd(o))
 	cmd.AddCommand(&cobra.Command{Use: "identity", RunE: func(*cobra.Command, []string) error {
 		c, e := configured(o)
 		if e != nil {
@@ -624,7 +636,7 @@ func libraryCmd(o *options) *cobra.Command {
 	}}
 	recent.Flags().IntVar(&recentLimit, "limit", 20, "maximum number of items")
 	cmd.AddCommand(recent)
-	cmd.AddCommand(libraryMaintenanceCmd(o))
+	cmd.AddCommand(libraryMaintenanceCmd(o), libraryIntegrityCmd(o))
 	return cmd
 }
 
@@ -836,6 +848,391 @@ func printLibraryMaintenanceCandidates(mode string, rows []librarymaintenance.Ca
 		}
 	}
 }
+func readOnlyAuditRejectJSON(cmd *cobra.Command) error {
+	if cmd.Flags().Changed("json") {
+		return errors.New("read-only audit reports do not support --json")
+	}
+	return nil
+}
+
+type readOnlyAuditFailure struct{ err error }
+
+func (e *readOnlyAuditFailure) Error() string {
+	var statusErr *api.HTTPError
+	if errors.As(e.err, &statusErr) {
+		return fmt.Sprintf("read-only audit request failed: HTTP %d: %s", statusErr.StatusCode, http.StatusText(statusErr.StatusCode))
+	}
+	return "read-only audit failed"
+}
+
+func (e *readOnlyAuditFailure) Unwrap() error { return e.err }
+
+func readOnlyAuditError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var existing *readOnlyAuditFailure
+	if errors.As(err, &existing) {
+		return err
+	}
+	return &readOnlyAuditFailure{err: err}
+}
+
+type readOnlyAuditRun func(*cobra.Command, []string, *pms.Client) error
+
+func readOnlyAuditCommand(o *options, cmd *cobra.Command, run readOnlyAuditRun) *cobra.Command {
+	cmd.RunE = func(c *cobra.Command, args []string) error {
+		client, err := configuredReadOnlyAudit(o)
+		if err != nil {
+			return readOnlyAuditError(err)
+		}
+		return readOnlyAuditError(run(c, args, client))
+	}
+	return cmd
+}
+
+var readOnlyAuditTestHooks struct {
+	sync.RWMutex
+	afterValidation func()
+}
+
+func runReadOnlyAuditAfterValidationHook() {
+	readOnlyAuditTestHooks.RLock()
+	hook := readOnlyAuditTestHooks.afterValidation
+	readOnlyAuditTestHooks.RUnlock()
+	if hook != nil {
+		hook()
+	}
+}
+
+func configuredReadOnlyAudit(o *options) (*pms.Client, error) {
+	c, err := config.Load(config.Path())
+	if err != nil {
+		return nil, err
+	}
+	resolved, err := resolveConfiguredConnection(c, o.server)
+	if err != nil {
+		return nil, err
+	}
+	u, err := url.Parse(resolved.server.URL)
+	if err != nil || !strings.EqualFold(u.Scheme, "https") {
+		return nil, errors.New("read-only audits require an HTTPS server configuration")
+	}
+	runReadOnlyAuditAfterValidationHook()
+	token, err := resolved.token()
+	if err != nil {
+		return nil, err
+	}
+	return newPMSClient(resolved.server, token)
+}
+func libraryIntegrityCmd(o *options) *cobra.Command {
+	var mode, section string
+	cmd := &cobra.Command{Use: "integrity"}
+	report := &cobra.Command{Use: "report", Args: cobra.NoArgs}
+	run := func(cmd *cobra.Command, _ []string, client *pms.Client) error {
+		if err := readOnlyAuditRejectJSON(cmd); err != nil {
+			return err
+		}
+		if mode != "storage" && mode != "unavailable-media" && mode != "duplicate-parts" && mode != "suspicious-parts" {
+			return errors.New("--mode must be one of storage, unavailable-media, duplicate-parts, or suspicious-parts")
+		}
+		if cmd.Flags().Changed("section") && strings.TrimSpace(section) == "" {
+			return errors.New("--section must not be blank")
+		}
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		items, err := libraryIntegrityItems(ctx, client, section)
+		if err != nil {
+			return err
+		}
+		if _, err := libraryintegrity.Storage(items); err != nil {
+			return err
+		}
+		if mode == "unavailable-media" {
+			probeFailed := false
+			for i := range items {
+				for j := range items[i].Media {
+					for k := range items[i].Media[j].Parts {
+						if err := client.ProbeMediaPart(ctx, items[i].Media[j].Parts[k].Reference); err != nil {
+							items[i].Media[j].Parts[k].Probe = libraryintegrity.ProbeFailed
+							probeFailed = true
+						} else {
+							items[i].Media[j].Parts[k].Probe = libraryintegrity.ProbeSucceeded
+						}
+					}
+				}
+			}
+			if probeFailed {
+				return errors.New("media part probe failed")
+			}
+		}
+		switch mode {
+		case "storage":
+			rows, e := libraryintegrity.Storage(items)
+			if e != nil {
+				return e
+			}
+			printIntegrityStorage(rows)
+		case "unavailable-media":
+			rows, e := libraryintegrity.UnavailableParts(items)
+			if e != nil {
+				return e
+			}
+			printIntegrityCandidates(rows)
+		case "duplicate-parts":
+			rows, e := libraryintegrity.DuplicateParts(items)
+			if e != nil {
+				return e
+			}
+			printIntegrityCandidates(rows)
+		case "suspicious-parts":
+			rows, e := libraryintegrity.SuspiciousParts(items)
+			if e != nil {
+				return e
+			}
+			printIntegrityCandidates(rows)
+		}
+		return nil
+	}
+	report.Flags().StringVar(&mode, "mode", "", "storage, unavailable-media, duplicate-parts, or suspicious-parts")
+	report.Flags().StringVar(&section, "section", "", "restrict to an exact library section key")
+	cmd.AddCommand(readOnlyAuditCommand(o, report, run))
+	return cmd
+}
+func libraryIntegrityItems(ctx context.Context, client *pms.Client, selected string) ([]libraryintegrity.Item, error) {
+	sections, err := libraryMaintenanceSections(ctx, client, selected)
+	if err != nil {
+		return nil, err
+	}
+	var out []libraryintegrity.Item
+	for _, section := range sections {
+		if !libraryMaintenanceSectionType(section.Type) {
+			continue
+		}
+		if strings.TrimSpace(section.Key) == "" {
+			return nil, errors.New("library section has blank identifier")
+		}
+		listed, err := client.ListSectionItems(ctx, section.Key)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range listed.MediaContainer.Metadata {
+			record := libraryintegrity.Item{Identity: libraryintegrity.Identity{SectionKey: section.Key, SectionTitle: section.Title, RatingKey: item.RatingKey, Title: item.Title}}
+			for _, media := range item.Media {
+				parts := make([]libraryintegrity.Part, 0, len(media.Part))
+				for _, part := range media.Part {
+					parts = append(parts, libraryintegrity.Part{Reference: part.Key, DeclaredBytes: part.Size})
+				}
+				record.Media = append(record.Media, libraryintegrity.Media{Parts: parts})
+			}
+			out = append(out, record)
+		}
+	}
+	return out, nil
+}
+func printIntegrityStorage(rows []libraryintegrity.StorageSummary) {
+	fmt.Println("section_key	section_title	eligible_item_count	declared_media_record_count	known_part_count	unknown_part_count	known_bytes")
+	for _, row := range rows {
+		fmt.Println(libraryMaintenanceTSVRow(row.SectionKey, row.SectionTitle, strconv.Itoa(row.EligibleItemCount), strconv.Itoa(row.DeclaredMediaCount), strconv.Itoa(row.KnownPartCount), strconv.Itoa(row.UnknownPartCount), strconv.FormatInt(row.KnownBytes, 10)))
+	}
+}
+func printIntegrityCandidates(rows []libraryintegrity.Candidate) {
+	fmt.Println("section_key\tsection_title\trating_key\ttitle\tpart_fingerprint\tstatus")
+	for _, row := range rows {
+		fmt.Println(libraryMaintenanceTSVRow(row.SectionKey, row.SectionTitle, row.RatingKey, row.Title, row.Fingerprint, string(row.Status)))
+	}
+}
+
+func sessionsDiagnosticsCmd(o *options) *cobra.Command {
+	cmd := &cobra.Command{Use: "diagnostics", Args: cobra.NoArgs}
+	run := func(cmd *cobra.Command, _ []string, client *pms.Client) error {
+		if err := readOnlyAuditRejectJSON(cmd); err != nil {
+			return err
+		}
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		listed, err := client.Sessions(ctx)
+		if err != nil {
+			return err
+		}
+		sessions := make([]sessiondiagnostics.Session, 0, len(listed.MediaContainer.Metadata))
+		for _, s := range listed.MediaContainer.Metadata {
+			if len(s.Media) != 1 || s.Media[0].VideoDecision == nil || s.Media[0].AudioDecision == nil || s.Media[0].SubtitleDecision == nil {
+				return errors.New("session has malformed media decisions")
+			}
+			d, err := sessiondiagnostics.DecisionFromMediaDecisions(*s.Media[0].VideoDecision, *s.Media[0].AudioDecision, *s.Media[0].SubtitleDecision)
+			if err != nil {
+				return err
+			}
+			sessions = append(sessions, sessiondiagnostics.Session{SessionID: s.Session.ID, Title: s.Title, GrandparentTitle: s.GrandparentTitle, ParentTitle: s.ParentTitle, UserID: s.User.ID, UserTitle: s.User.Title, ClientID: s.Player.MachineIdentifier, ClientTitle: s.Player.Title, ClientPlatform: s.Player.Platform, Decision: d})
+		}
+		report, err := sessiondiagnostics.Analyze(sessions)
+		if err != nil {
+			return err
+		}
+		printSessionDiagnostics(report)
+		return nil
+	}
+	return readOnlyAuditCommand(o, cmd, run)
+}
+func printSessionDiagnostics(r sessiondiagnostics.Report) {
+	fmt.Println("session_id\ttitle\tgrandparent_title\tparent_title\tuser_id\tuser_title\tclient_id\tclient_title\tclient_platform\tdecision")
+	for _, x := range r.Rows {
+		fmt.Println(libraryMaintenanceTSVRow(x.SessionID, x.Title, x.GrandparentTitle, x.ParentTitle, x.UserID, x.UserTitle, x.ClientID, x.ClientTitle, x.ClientPlatform, string(x.Decision)))
+	}
+	fmt.Println()
+	fmt.Println("decision\tcount")
+	for _, x := range r.DecisionCounts {
+		fmt.Println(libraryMaintenanceTSVRow(string(x.Decision), strconv.Itoa(x.Count)))
+	}
+}
+
+func serverMaintenanceCmd(o *options) *cobra.Command {
+	cmd := &cobra.Command{Use: "maintenance"}
+	status := &cobra.Command{Use: "status", Args: cobra.NoArgs}
+	run := func(c *cobra.Command, _ []string, client *pms.Client) error {
+		if err := readOnlyAuditRejectJSON(c); err != nil {
+			return err
+		}
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		a, err := client.Activities(ctx)
+		if err != nil {
+			return err
+		}
+		b, err := client.ButlerTasks(ctx)
+		if err != nil {
+			return err
+		}
+		u, err := client.UpdaterStatus(ctx)
+		if err != nil {
+			return err
+		}
+		s := maintenancestatus.Snapshot{Updater: maintenancestatus.Updater{CanInstall: u.MediaContainer.CanInstall, Version: u.MediaContainer.Version, ReleaseDate: u.MediaContainer.ReleaseDate}}
+		for _, x := range a.MediaContainer.Activity {
+			s.Activities = append(s.Activities, maintenancestatus.Activity{ID: x.UUID, Type: x.Type, Title: x.Title, Progress: x.Progress, Cancellable: x.Cancellable})
+		}
+		for _, x := range b.MediaContainer.ButlerTask {
+			s.Tasks = append(s.Tasks, maintenancestatus.Task{ID: x.Name, Title: x.Title, Schedule: x.Schedule, Enabled: x.Enabled, Interval: x.Interval})
+		}
+		r, err := maintenancestatus.Analyze(s)
+		if err != nil {
+			return err
+		}
+		printMaintenanceStatus(r)
+		return nil
+	}
+	cmd.AddCommand(readOnlyAuditCommand(o, status, run))
+	return cmd
+}
+func optionalAuditValue[T any](v *T) string {
+	if v == nil {
+		return ""
+	}
+	return fmt.Sprint(*v)
+}
+func printMaintenanceStatus(r maintenancestatus.Report) {
+	fmt.Println("activity_id\ttype\ttitle\tprogress\tcancellable")
+	for _, x := range r.Activities {
+		fmt.Println(libraryMaintenanceTSVRow(x.ID, x.Type, x.Title, optionalAuditValue(x.Progress), optionalAuditValue(x.Cancellable)))
+	}
+	fmt.Println()
+	fmt.Println("task_id\ttitle\tschedule\tenabled\tinterval")
+	for _, x := range r.Tasks {
+		fmt.Println(libraryMaintenanceTSVRow(x.ID, x.Title, x.Schedule, optionalAuditValue(x.Enabled), optionalAuditValue(x.Interval)))
+	}
+	fmt.Println()
+	fmt.Println("can_install\tversion\trelease_date")
+	fmt.Println(libraryMaintenanceTSVRow(optionalAuditValue(r.Updater.CanInstall), r.Updater.Version, r.Updater.ReleaseDate))
+}
+
+func playlistsAuditCmd(o *options) *cobra.Command {
+	return containerAuditCommand(o, "audit", func(ctx context.Context, c *pms.Client) ([]containeraudit.Container, error) {
+		listed, err := c.ListPlaylists(ctx)
+		if err != nil {
+			return nil, err
+		}
+		var out []containeraudit.Container
+		for _, p := range listed.MediaContainer.Metadata {
+			items, err := c.ListPlaylistItems(ctx, p.RatingKey)
+			if err != nil {
+				return nil, err
+			}
+			v := containeraudit.Container{ID: p.RatingKey, Title: p.Title, Kind: containeraudit.KindPlaylist, ItemsComplete: true}
+			for _, x := range items.MediaContainer.Metadata {
+				v.Items = append(v.Items, containeraudit.Item{RatingKey: x.RatingKey})
+			}
+			out = append(out, v)
+		}
+		return out, nil
+	})
+}
+func collectionsAuditCmd(o *options) *cobra.Command {
+	var section string
+	cmd := containerAuditCommand(o, "audit", func(ctx context.Context, c *pms.Client) ([]containeraudit.Container, error) {
+		scope, err := c.Section(ctx, section)
+		if err != nil || strings.TrimSpace(scope.MediaContainer.Key) == "" || scope.MediaContainer.Key != section {
+			return nil, errors.New("collection audit section scope is malformed")
+		}
+		listed, err := c.ListCollections(ctx, section)
+		if err != nil {
+			return nil, err
+		}
+		var out []containeraudit.Container
+		for _, p := range listed.MediaContainer.Metadata {
+			if strings.TrimSpace(p.RatingKey) == "" {
+				return nil, errors.New("collection has blank identifier")
+			}
+			items, err := c.ListCollectionItems(ctx, p.RatingKey)
+			if err != nil {
+				return nil, err
+			}
+			v := containeraudit.Container{ID: p.RatingKey, Title: p.Title, Kind: containeraudit.KindCollection, ItemsComplete: true}
+			for _, x := range items.MediaContainer.Metadata {
+				v.Items = append(v.Items, containeraudit.Item{RatingKey: x.RatingKey})
+			}
+			out = append(out, v)
+		}
+		return out, nil
+	})
+	cmd.Flags().StringVar(&section, "section", "", "exact library section key")
+	original := cmd.RunE
+	cmd.RunE = func(c *cobra.Command, a []string) error {
+		if strings.TrimSpace(section) == "" {
+			return errors.New("--section is required")
+		}
+		return original(c, a)
+	}
+	return cmd
+}
+func containerAuditCommand(o *options, use string, list func(context.Context, *pms.Client) ([]containeraudit.Container, error)) *cobra.Command {
+	cmd := &cobra.Command{Use: use, Args: cobra.NoArgs}
+	run := func(cmd *cobra.Command, _ []string, client *pms.Client) error {
+		if err := readOnlyAuditRejectJSON(cmd); err != nil {
+			return err
+		}
+		ctx, cancel := commandContext(o)
+		defer cancel()
+		containers, err := list(ctx, client)
+		if err != nil {
+			return err
+		}
+		r, err := containeraudit.Analyze(containers)
+		if err != nil {
+			return err
+		}
+		printContainerAudit(r)
+		return nil
+	}
+	return readOnlyAuditCommand(o, cmd, run)
+}
+func printContainerAudit(r containeraudit.Report) {
+	fmt.Println("container_id	title	kind	items_complete	empty	item_rating_keys	duplicate_item_rating_keys")
+	for _, x := range r.Candidates {
+		fmt.Println(libraryMaintenanceTSVRow(x.ID, x.Title, string(x.Kind), strconv.FormatBool(x.ItemsComplete), strconv.FormatBool(x.Empty), strings.Join(x.ItemRatingKeys, ","), strings.Join(x.DuplicateItemRatingKeys, ",")))
+	}
+}
+
 func metadataCmd(o *options) *cobra.Command {
 	cmd := &cobra.Command{Use: "metadata"}
 	cmd.AddCommand(&cobra.Command{Use: "get RATING_KEY", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, a []string) error {
@@ -906,7 +1303,7 @@ func sessionsCmd(o *options) *cobra.Command {
 	history.Flags().StringVar(&librarySectionID, "section-id", "", "filter by library section ID")
 	history.Flags().StringVar(&metadataItemID, "metadata-id", "", "filter by metadata item ID")
 	history.Flags().StringVar(&sortExpr, "sort", "", "sort expression, for example viewedAt:desc")
-	cmd.AddCommand(history)
+	cmd.AddCommand(history, sessionsDiagnosticsCmd(o))
 	return cmd
 }
 
@@ -1116,6 +1513,7 @@ func playlistsCmd(o *options) *cobra.Command {
 			return e
 		}})
 	}
+	cmd.AddCommand(playlistsAuditCmd(o))
 	return cmd
 }
 func collectionsCmd(o *options) *cobra.Command {
@@ -1142,6 +1540,7 @@ func collectionsCmd(o *options) *cobra.Command {
 			return e
 		}})
 	}
+	cmd.AddCommand(collectionsAuditCmd(o))
 	return cmd
 }
 func queuesCmd(o *options) *cobra.Command {

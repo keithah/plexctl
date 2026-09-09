@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -37,7 +38,34 @@ func New(base, token string, hc *http.Client) (*Client, error) {
 	if hc == nil {
 		hc = &http.Client{Timeout: 30 * time.Second}
 	}
-	return &Client{BaseURL: u, Token: token, HTTP: hc, ClientID: "plexctl", APIVersion: "1"}, nil
+	// Preserve supplied HTTP client settings while ensuring redirects cannot
+	// move Plex credentials to a different origin.
+	client := *hc
+	priorCheckRedirect := client.CheckRedirect
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) > 0 && !sameOrigin(req.URL, via[0].URL) {
+			return errors.New("cross-origin redirect blocked")
+		}
+		if priorCheckRedirect != nil {
+			return priorCheckRedirect(req, via)
+		}
+		return nil
+	}
+	return &Client{BaseURL: u, Token: token, HTTP: &client, ClientID: "plexctl", APIVersion: "1"}, nil
+}
+
+func sameOrigin(a, b *url.URL) bool {
+	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Hostname(), b.Hostname()) && effectivePort(a) == effectivePort(b)
+}
+
+func effectivePort(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	if strings.EqualFold(u.Scheme, "https") {
+		return "443"
+	}
+	return "80"
 }
 
 // SetInsecureTLS enables or disables certificate verification for this client.

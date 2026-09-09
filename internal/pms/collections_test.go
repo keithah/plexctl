@@ -179,3 +179,85 @@ func TestCollectionPaginatorsRejectChangingTotalSize(t *testing.T) {
 		})
 	}
 }
+
+func TestListPlaylistsRejectsChangingTotalSize(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/playlists" {
+			http.NotFound(w, r)
+			return
+		}
+		switch r.URL.Query().Get("X-Plex-Container-Start") {
+		case "0":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"size":1,"offset":0,"totalSize":2,"Metadata":[{"ratingKey":"first"}]}}`))
+		case "1":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"size":1,"offset":1,"totalSize":3,"Metadata":[{"ratingKey":"second"}]}}`))
+		default:
+			http.Error(w, "unexpected page", http.StatusNotFound)
+		}
+	}))
+	defer s.Close()
+	a, err := api.New(s.URL, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(a).ListPlaylists(context.Background()); err == nil || !strings.Contains(err.Error(), "total size changed") {
+		t.Fatalf("error = %v, want total size changed error", err)
+	}
+}
+
+func TestListPlaylistsRejectsDuplicateIdentifierAcrossPages(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/playlists" {
+			http.NotFound(w, r)
+			return
+		}
+		switch r.URL.Query().Get("X-Plex-Container-Start") {
+		case "0":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"size":1,"offset":0,"totalSize":2,"Metadata":[{"ratingKey":"same"}]}}`))
+		case "1":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"size":1,"offset":1,"totalSize":2,"Metadata":[{"ratingKey":"same"}]}}`))
+		default:
+			http.Error(w, "unexpected page", http.StatusNotFound)
+		}
+	}))
+	defer s.Close()
+	a, err := api.New(s.URL, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(a).ListPlaylists(context.Background()); err == nil || !strings.Contains(err.Error(), "duplicate playlist identifier") {
+		t.Fatalf("error = %v, want duplicate playlist identifier error", err)
+	}
+}
+
+func TestListPlaylistItemsRejectsIncompletePages(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"missing offset", `{"MediaContainer":{"size":1,"totalSize":1,"Metadata":[{"ratingKey":"one"}]}}`},
+		{"missing total size", `{"MediaContainer":{"size":1,"offset":0,"Metadata":[{"ratingKey":"one"}]}}`},
+		{"wrong offset", `{"MediaContainer":{"size":1,"offset":1,"totalSize":1,"Metadata":[{"ratingKey":"one"}]}}`},
+		{"zero progress", `{"MediaContainer":{"size":0,"offset":0,"totalSize":1,"Metadata":[]}}`},
+		{"blank item identifier", `{"MediaContainer":{"size":1,"offset":0,"totalSize":1,"Metadata":[{"ratingKey":""}]}}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/playlists/p1/items" {
+					http.NotFound(w, r)
+					return
+				}
+				_, _ = w.Write([]byte(test.body))
+			}))
+			defer s.Close()
+			a, err := api.New(s.URL, "", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := New(a).ListPlaylistItems(context.Background(), "p1"); err == nil {
+				t.Fatal("incomplete playlist listing succeeded")
+			}
+		})
+	}
+}

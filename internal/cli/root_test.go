@@ -377,6 +377,25 @@ func TestResolveCachedServeTargetFallsBackWhenIdentityNoLongerMatches(t *testing
 		t.Fatal("cache selected an endpoint with the wrong machine identifier")
 	}
 }
+func TestResolveConfiguredConnectionFallsBackToCurrentV2ServerLegacyEntry(t *testing.T) {
+	resolved, err := resolveConfiguredConnection(config.Config{
+		Current:       "legacy-default",
+		CurrentServer: "legacy-selected",
+		Servers: map[string]config.Server{
+			"legacy-default":  {URL: "https://default.example"},
+			"legacy-selected": {URL: "https://selected.example", TokenEnv: "SELECTED_TOKEN"},
+		},
+		Accounts:  map[string]config.Account{},
+		ServersV2: map[string]config.ServerProfile{"other": {}},
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := resolved.server.URL, "https://selected.example"; got != want {
+		t.Fatalf("resolved URL = %q, want %q", got, want)
+	}
+}
+
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	old := os.Stdout

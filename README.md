@@ -139,6 +139,64 @@ and no local persistent writes. Rows are candidates for review, not automatic
 cleanup instructions. Output never includes thumbnail URLs or paths, server
 base URLs, tokens, headers, response bodies, or poster bytes.
 
+### Read-only audit reports
+
+The following five audit commands are deterministic, tab-separated, **stdout-only**
+reports. They inherit `--server` and `--timeout`, reject `--json`, create no CSV,
+JSONL, database, cache, snapshot, or other local artifact, and use authenticated
+PMS `GET` requests only:
+
+```bash
+plexctl library integrity report --mode storage|unavailable-media|duplicate-parts|suspicious-parts [--section SECTION_KEY]
+plexctl sessions diagnostics
+plexctl server maintenance status
+plexctl playlists audit
+plexctl collections audit --section SECTION_KEY
+```
+
+`library integrity report` requires exactly one `--mode`:
+
+- **`storage`** prints per-section eligible-item, declared-media-record, declared-part,
+  and known-byte counts. Missing byte sizes remain unknown rather than being treated as zero.
+- **`unavailable-media`** checks declared media parts with a safe PMS-relative,
+  authenticated `GET` probe. Each probe requests `Range: bytes=0-1023`, consumes
+  at most 1024 bytes even if PMS ignores the range, and never downloads a full
+  media file.
+- **`duplicate-parts`** identifies repeated safe part paths through a deterministic
+  opaque fingerprint; it never prints the underlying path.
+- **`suspicious-parts`** identifies malformed media declarations, including missing
+  media or part data, unsafe or blank part references, and declared zero-byte
+  parts. Intentionally omitted sizes remain `size_unknown` rather than guessed.
+
+`library integrity report --section SECTION_KEY` optionally restricts the report
+to one exact library section key, resolving that section directly without
+enumerating unrelated sections. `collections audit` requires `--section
+SECTION_KEY`, which is also an exact library section key, not a fuzzy name.
+`sessions diagnostics`, `server maintenance status`, and `playlists audit` accept
+no audit-specific positional arguments or flags. `sessions diagnostics` prints
+active-session metadata plus stable decision-state totals. `server maintenance status` reports
+current activities, Butler task configuration, and the updater status PMS already
+reports. `playlists audit` and `collections audit` enumerate each container and
+its items, identifying empty containers, explicitly surfaced duplicate item references, and malformed
+or inaccessible references.
+
+Every audit completes validation, required enumeration, and any applicable probe
+before emitting its TSV header or row. A malformed response, retrieval error, or
+failed probe is an error—not an empty, healthy, or partial result—and produces no
+report rows. External text is control-safe TSV encoded. Audit output and failures
+do not reveal PMS base URLs, tokens, request headers, response bodies,
+authenticated paths, raw media paths, filenames, or part references; duplicate
+correlation uses only opaque fingerprints.
+
+These reports are observation only. They do **not** repair unavailable files,
+scan or refresh libraries, alter metadata or posters, optimize or clean storage,
+terminate sessions, check/download/apply updates, start or stop Butler work, or
+create, edit, reorder, delete, or otherwise mutate playlists or collections.
+They also do not use filesystem access, SSH, raw API writes, exports, local
+persistence, or automatic remediation. A future mutation would require a typed
+command, explicit confirmation design, fresh live-contract verification, and
+independent review.
+
 ### External Plex sharing
 
 The `sharing` group manages **external** Plex server shares only; Plex Home and
