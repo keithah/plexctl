@@ -22,6 +22,7 @@ import (
 	"github.com/keithah/plexctl/internal/pms"
 	"github.com/keithah/plexctl/internal/sessiondiagnostics"
 	"github.com/spf13/cobra"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -1656,9 +1657,16 @@ func serveCmd(o *options) *cobra.Command {
 	resources := plexauth.NewResourceCache()
 	connections := connectioncache.New(connectioncache.Path())
 	cmd := &cobra.Command{Use: "serve", Short: "Serve HTTP health endpoints for Uptime Kuma", RunE: func(*cobra.Command, []string) error {
-		h := monitor.Handler{Timeout: o.timeout, Resolve: func(account, server string) (*pms.Client, error) {
-			return resolveServeTargetCached(o, account, server, resources, connections)
-		}}
+		h := monitor.Handler{
+			Timeout:     o.timeout,
+			Correlation: monitor.NewCorrelationTracker(5*time.Minute, 3, nil),
+			OnCorrelation: func(event monitor.CorrelationEvent) {
+				log.Print(event.String())
+			},
+			Resolve: func(account, server string) (*pms.Client, error) {
+				return resolveServeTargetCached(o, account, server, resources, connections)
+			},
+		}
 		s := &http.Server{Addr: listen, Handler: h}
 		fmt.Fprintf(os.Stderr, "plexctl monitoring adapter listening on %s\n", listen)
 		return s.ListenAndServe()
@@ -1730,15 +1738,12 @@ func resolveCachedServeTarget(ctx context.Context, connections *connectioncache.
 	}
 	var candidates []plexauth.Connection
 	if connections != nil {
-		connection, ok, err := connections.Get(account, profile.MachineIdentifier)
-		if err == nil && ok {
-			candidates = append(candidates, connection)
+		cached, err := connections.Candidates(account, profile.MachineIdentifier)
+		if err == nil {
+			candidates = append(candidates, cached...)
 		}
 	}
-	if profile.URL != "" {
-		candidates = append(candidates, plexauth.Connection{URI: profile.URL, Local: profile.Local, Relay: profile.Relay})
-	}
-	for _, candidate := range candidates {
+	for _, candidate := range serveCandidates(candidates, profile) {
 		validated, err := validatedConnection(ctx, plexauth.Resource{
 			ClientIdentifier: profile.MachineIdentifier,
 			Connections:      []plexauth.Connection{candidate},
@@ -1757,6 +1762,19 @@ func resolveCachedServeTarget(ctx context.Context, connections *connectioncache.
 		return client, true, nil
 	}
 	return nil, false, nil
+}
+
+// serveCandidates limits all cache and profile endpoint probes to the same
+// bounded budget. Every returned candidate still requires an identity probe.
+func serveCandidates(cached []plexauth.Connection, profile config.ServerProfile) []plexauth.Connection {
+	candidates := append([]plexauth.Connection(nil), cached...)
+	if profile.URL != "" {
+		candidates = append(candidates, plexauth.Connection{URI: profile.URL, Local: profile.Local, Relay: profile.Relay})
+	}
+	if len(candidates) > 3 {
+		candidates = candidates[:3]
+	}
+	return candidates
 }
 
 // resolveFreshServeTarget uses a previously validated endpoint whenever it is
@@ -1782,25 +1800,24 @@ func resolveFreshServeTarget(o *options, c config.Config, account, requested str
 	plex := plexauth.New("https://plex.tv", "plexctl", nil)
 	resources, err := resourceCache.Resources(ctx, plex, accountToken, plexResourceCacheTTL)
 	if err != nil {
-		return nil, fmt.Errorf("refresh Plex connections for %s: %w", account, err)
+		return nil, discoveryError("refresh Plex connections")
 	}
 	var matches []plexauth.Resource
-	for _, resource := range resources {
-		if profile.MachineIdentifier != "" && resource.ClientIdentifier == profile.MachineIdentifier {
-			matches = append(matches, resource)
-		} else if profile.MachineIdentifier == "" && strings.EqualFold(resource.Name, requested) {
-			matches = append(matches, resource)
+	matches = matchingServeResources(resources, profile, requested)
+	if len(matches) == 0 {
+		if previous, ok := resourceCache.PreviousResources(plex, accountToken, plexResourceCacheTTL); ok {
+			matches = matchingServeResources(previous, profile, requested)
 		}
 	}
 	if len(matches) == 0 {
-		return nil, fmt.Errorf("server %q is not currently advertised by Plex.tv", requested)
+		return nil, discoveryError("configured server absent")
 	}
 	if len(matches) > 1 {
-		return nil, fmt.Errorf("server %q has ambiguous Plex.tv identity", requested)
+		return nil, discoveryError("ambiguous advertised server")
 	}
 	connection, err := validatedConnection(ctx, matches[0], accountToken)
 	if err != nil {
-		return nil, fmt.Errorf("refresh connection for %s/%s: %w", account, requested, err)
+		return nil, discoveryError("advertised connection did not validate")
 	}
 	normalized := normalizeDiscoveredConnection(connection)
 	if connections != nil && profile.MachineIdentifier != "" {
@@ -1814,6 +1831,23 @@ func resolveFreshServeTarget(o *options, c config.Config, account, requested str
 	}
 	return newPMSClient(config.Server{URL: normalized.URL, InsecureTLS: normalized.InsecureTLS}, token)
 }
+
+func discoveryError(reason string) error {
+	return fmt.Errorf("%w: %s", monitor.ErrDiscoveryUnavailable, reason)
+}
+
+func matchingServeResources(resources []plexauth.Resource, profile config.ServerProfile, requested string) []plexauth.Resource {
+	var matches []plexauth.Resource
+	for _, resource := range resources {
+		if profile.MachineIdentifier != "" && resource.ClientIdentifier == profile.MachineIdentifier {
+			matches = append(matches, resource)
+		} else if profile.MachineIdentifier == "" && strings.EqualFold(resource.Name, requested) {
+			matches = append(matches, resource)
+		}
+	}
+	return matches
+}
+
 func apiCmd(o *options) *cobra.Command {
 	cmd := &cobra.Command{Use: "api METHOD PATH", Args: cobra.ExactArgs(2), RunE: func(_ *cobra.Command, a []string) error {
 		method := a[0]

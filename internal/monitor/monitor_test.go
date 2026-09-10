@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -58,6 +59,53 @@ func TestHandlerHealthyAndUnhealthy(t *testing.T) {
 	h.ServeHTTP(r, httptest.NewRequest(http.MethodPost, "/plex/keith/SF2", nil))
 	if r.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("method status = %d", r.Code)
+	}
+}
+
+func TestHandlerReportsCorrelationWithoutChangingFailureStatus(t *testing.T) {
+	var event *CorrelationEvent
+	tracker := NewCorrelationTracker(time.Minute, 2, time.Now)
+	h := Handler{
+		Correlation: tracker,
+		OnCorrelation: func(got CorrelationEvent) {
+			event = &got
+		},
+		Resolve: func(string, string) (*pms.Client, error) {
+			return nil, ErrDiscoveryUnavailable
+		},
+	}
+	for _, path := range []string{"/plex/account/one", "/plex/account/two"} {
+		r := httptest.NewRecorder()
+		h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, path, nil))
+		if r.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status=%d, want individual 503", r.Code)
+		}
+	}
+	if event == nil || event.TargetCount != 2 {
+		t.Fatalf("event=%+v, want two-target correlation", event)
+	}
+}
+
+func TestHandlerDoesNotExposeResolverErrorDetail(t *testing.T) {
+	secret := "https://private.example/?token=secret"
+	h := Handler{Resolve: func(string, string) (*pms.Client, error) {
+		return nil, errors.New(secret)
+	}}
+	r := httptest.NewRecorder()
+	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/plex/account/server", nil))
+	if r.Code != http.StatusNotFound || contains(r.Body.String(), secret) {
+		t.Fatalf("status=%d body=%s, resolver detail leaked", r.Code, r.Body)
+	}
+}
+
+func TestHandlerMapsDiscoveryFailureTo503(t *testing.T) {
+	h := Handler{Resolve: func(string, string) (*pms.Client, error) {
+		return nil, ErrDiscoveryUnavailable
+	}}
+	r := httptest.NewRecorder()
+	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/plex/account/server", nil))
+	if r.Code != http.StatusServiceUnavailable || !contains(r.Body.String(), `"classification":"discovery"`) {
+		t.Fatalf("status=%d body=%s, want 503 discovery", r.Code, r.Body)
 	}
 }
 

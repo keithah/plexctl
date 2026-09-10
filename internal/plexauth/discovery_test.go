@@ -37,6 +37,43 @@ func TestAccountAndResourceDiscovery(t *testing.T) {
 	}
 }
 
+func TestResourceCacheRetainsPreviousCompleteSnapshot(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/resources" {
+			http.NotFound(w, r)
+			return
+		}
+		calls++
+		w.Header().Set("Content-Type", "application/xml")
+		if calls == 1 {
+			_, _ = w.Write([]byte(`<MediaContainer><Device name="expected" clientIdentifier="expected"><Connection uri="https://expected.example:32400"/></Device></MediaContainer>`))
+			return
+		}
+		_, _ = w.Write([]byte(`<MediaContainer><Device name="other" clientIdentifier="other"><Connection uri="https://other.example:32400"/></Device></MediaContainer>`))
+	}))
+	defer server.Close()
+
+	cache := NewResourceCache()
+	client := New(server.URL, "test", &http.Client{})
+	if _, err := cache.Resources(context.Background(), client, "token", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	cache.mu.Lock()
+	key := client.BaseURL + "\x00" + client.ClientID + "\x00" + tokenCacheKey("token")
+	entry := cache.entries[key]
+	entry.at = time.Now().Add(-2 * time.Minute)
+	cache.entries[key] = entry
+	cache.mu.Unlock()
+	if _, err := cache.Resources(context.Background(), client, "token", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	previous, ok := cache.PreviousResources(client, "token", time.Minute)
+	if !ok || len(previous) != 1 || previous[0].ClientIdentifier != "expected" {
+		t.Fatalf("previous=%+v ok=%t, want expected previous snapshot", previous, ok)
+	}
+}
+
 func TestResourcesCacheUsesTTLAndSeparatesTokens(t *testing.T) {
 	var calls int
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

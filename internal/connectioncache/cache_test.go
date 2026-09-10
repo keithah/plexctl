@@ -27,6 +27,36 @@ func TestStorePersistsValidatedConnectionAcrossReopen(t *testing.T) {
 	}
 }
 
+func TestStoreRetainsThreeMostRecentDistinctValidatedConnections(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "connections.json")
+	store := New(path)
+	connections := []plexauth.Connection{
+		{URI: "https://one.example:32400"},
+		{URI: "https://two.example:32400"},
+		{URI: "https://three.example:32400"},
+		{URI: "https://four.example:32400"},
+	}
+	for _, connection := range connections {
+		if err := store.Put("account", "machine", connection); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := New(path).Candidates("account", "machine")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"https://four.example:32400", "https://three.example:32400", "https://two.example:32400"}
+	if len(got) != len(want) {
+		t.Fatalf("candidate count = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].URI != want[i] {
+			t.Fatalf("candidate[%d] = %q, want %q", i, got[i].URI, want[i])
+		}
+	}
+}
+
 func TestStoreSeparatesAccountsWithSameMachineIdentifier(t *testing.T) {
 	store := New(filepath.Join(t.TempDir(), "connections.json"))
 	first := plexauth.Connection{URI: "https://first.plex.direct:32400"}

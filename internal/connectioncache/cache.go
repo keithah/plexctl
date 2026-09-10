@@ -12,8 +12,11 @@ import (
 )
 
 type diskCache struct {
-	Connections map[string]plexauth.Connection `json:"connections"`
+	Connections map[string]plexauth.Connection   `json:"connections"`
+	Histories   map[string][]plexauth.Connection `json:"histories,omitempty"`
 }
+
+const maxCandidates = 3
 
 type Store struct {
 	path string
@@ -52,6 +55,30 @@ func (s *Store) Get(account, machine string) (plexauth.Connection, bool, error) 
 	return connection, ok, nil
 }
 
+// Candidates returns the newest validated connections first. The historical
+// entries remain candidates only: callers must still validate the PMS identity
+// before using one.
+func (s *Store) Candidates(account, machine string) ([]plexauth.Connection, error) {
+	if account == "" || machine == "" {
+		return nil, fmt.Errorf("cache lookup requires account and machine identifier")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cache, err := s.load()
+	if err != nil {
+		return nil, err
+	}
+	key := cacheKey(account, machine)
+	candidates := append([]plexauth.Connection(nil), cache.Histories[key]...)
+	if current, ok := cache.Connections[key]; ok {
+		candidates = prependUniqueConnection(current, candidates)
+	}
+	if len(candidates) > maxCandidates {
+		candidates = candidates[:maxCandidates]
+	}
+	return candidates, nil
+}
+
 func (s *Store) Put(account, machine string, connection plexauth.Connection) error {
 	if account == "" || machine == "" || connection.URI == "" {
 		return fmt.Errorf("cache write requires account, machine identifier, and connection URI")
@@ -63,11 +90,27 @@ func (s *Store) Put(account, machine string, connection plexauth.Connection) err
 		return err
 	}
 	cache.Connections[cacheKey(account, machine)] = connection
+	key := cacheKey(account, machine)
+	cache.Histories[key] = prependUniqueConnection(connection, cache.Histories[key])
+	if len(cache.Histories[key]) > maxCandidates {
+		cache.Histories[key] = cache.Histories[key][:maxCandidates]
+	}
 	return s.save(cache)
 }
 
+func prependUniqueConnection(connection plexauth.Connection, connections []plexauth.Connection) []plexauth.Connection {
+	out := make([]plexauth.Connection, 0, len(connections)+1)
+	out = append(out, connection)
+	for _, candidate := range connections {
+		if candidate.URI != connection.URI {
+			out = append(out, candidate)
+		}
+	}
+	return out
+}
+
 func (s *Store) load() (diskCache, error) {
-	cache := diskCache{Connections: map[string]plexauth.Connection{}}
+	cache := diskCache{Connections: map[string]plexauth.Connection{}, Histories: map[string][]plexauth.Connection{}}
 	data, err := os.ReadFile(s.path)
 	if errors.Is(err, os.ErrNotExist) {
 		return cache, nil
@@ -80,6 +123,9 @@ func (s *Store) load() (diskCache, error) {
 	}
 	if cache.Connections == nil {
 		cache.Connections = map[string]plexauth.Connection{}
+	}
+	if cache.Histories == nil {
+		cache.Histories = map[string][]plexauth.Connection{}
 	}
 	return cache, nil
 }

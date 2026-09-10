@@ -136,8 +136,10 @@ type Connection struct {
 }
 
 type resourceCacheEntry struct {
-	resources []Resource
-	at        time.Time
+	resources  []Resource
+	at         time.Time
+	previous   []Resource
+	previousAt time.Time
 }
 
 type ResourceCache struct {
@@ -175,9 +177,36 @@ func (c *ResourceCache) Resources(ctx context.Context, client *Client, token str
 		return nil, err
 	}
 	c.mu.Lock()
-	c.entries[key] = resourceCacheEntry{resources: cloneResources(resources), at: time.Now()}
+	prior, hadPrior := c.entries[key]
+	refreshedAt := time.Now()
+	newEntry := resourceCacheEntry{resources: cloneResources(resources), at: refreshedAt}
+	if hadPrior {
+		newEntry.previous = cloneResources(prior.resources)
+		// Retention starts when this complete snapshot is superseded, not when
+		// it was initially fetched. Otherwise a normal TTL refresh would make
+		// the retained fallback immediately ineligible.
+		newEntry.previousAt = refreshedAt
+	}
+	c.entries[key] = newEntry
 	c.mu.Unlock()
 	return resources, nil
+}
+
+// PreviousResources returns the last complete discovery snapshot after a newer
+// one has replaced it. It is only a candidate source; callers must validate a
+// connection and the expected PMS identity before using it.
+func (c *ResourceCache) PreviousResources(client *Client, token string, maxAge time.Duration) ([]Resource, bool) {
+	if c == nil || maxAge <= 0 {
+		return nil, false
+	}
+	key := client.BaseURL + "\x00" + client.ClientID + "\x00" + tokenCacheKey(token)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[key]
+	if !ok || entry.previousAt.IsZero() || time.Since(entry.previousAt) > maxAge {
+		return nil, false
+	}
+	return cloneResources(entry.previous), true
 }
 
 func (c *ResourceCache) Invalidate() {
