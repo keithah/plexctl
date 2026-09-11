@@ -1836,12 +1836,12 @@ func discoveryError(reason string) error {
 	return fmt.Errorf("%w: %s", monitor.ErrDiscoveryUnavailable, reason)
 }
 
-func matchingServeResources(resources []plexauth.Resource, profile config.ServerProfile, requested string) []plexauth.Resource {
+func matchingServeResources(resources []plexauth.Resource, profile config.ServerProfile, _ string) []plexauth.Resource {
 	var matches []plexauth.Resource
 	for _, resource := range resources {
 		if profile.MachineIdentifier != "" && resource.ClientIdentifier == profile.MachineIdentifier {
 			matches = append(matches, resource)
-		} else if profile.MachineIdentifier == "" && strings.EqualFold(resource.Name, requested) {
+		} else if profile.MachineIdentifier == "" && strings.EqualFold(resource.Name, profile.Name) {
 			matches = append(matches, resource)
 		}
 	}

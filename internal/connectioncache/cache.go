@@ -89,9 +89,12 @@ func (s *Store) Put(account, machine string, connection plexauth.Connection) err
 	if err != nil {
 		return err
 	}
-	cache.Connections[cacheKey(account, machine)] = connection
 	key := cacheKey(account, machine)
+	if previous, ok := cache.Connections[key]; ok {
+		cache.Histories[key] = prependUniqueConnection(previous, cache.Histories[key])
+	}
 	cache.Histories[key] = prependUniqueConnection(connection, cache.Histories[key])
+	cache.Connections[key] = connection
 	if len(cache.Histories[key]) > maxCandidates {
 		cache.Histories[key] = cache.Histories[key][:maxCandidates]
 	}

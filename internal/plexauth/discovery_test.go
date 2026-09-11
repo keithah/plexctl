@@ -2,9 +2,11 @@ package plexauth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 )
@@ -71,6 +73,116 @@ func TestResourceCacheRetainsPreviousCompleteSnapshot(t *testing.T) {
 	previous, ok := cache.PreviousResources(client, "token", time.Minute)
 	if !ok || len(previous) != 1 || previous[0].ClientIdentifier != "expected" {
 		t.Fatalf("previous=%+v ok=%t, want expected previous snapshot", previous, ok)
+	}
+}
+
+func TestResourceCacheSerializesSameKeyRefreshAndRetainsPreRefreshSnapshot(t *testing.T) {
+	var mu sync.Mutex
+	calls := 0
+	refreshStarted := make(chan struct{})
+	thirdRequest := make(chan struct{}, 1)
+	releaseRefresh := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/resources" {
+			http.NotFound(w, r)
+			return
+		}
+		mu.Lock()
+		calls++
+		call := calls
+		mu.Unlock()
+		if call == 2 {
+			close(refreshStarted)
+			<-releaseRefresh
+		}
+		if call == 3 {
+			thirdRequest <- struct{}{}
+		}
+		w.Header().Set("Content-Type", "application/xml")
+		fmt.Fprintf(w, `<MediaContainer><Device name="server-%d" clientIdentifier="id-%d"/></MediaContainer>`, call, call)
+	}))
+	defer server.Close()
+
+	cache := NewResourceCache()
+	client := New(server.URL, "test", &http.Client{})
+	if _, err := cache.Resources(context.Background(), client, "token", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	key := client.BaseURL + "\x00" + client.ClientID + "\x00" + tokenCacheKey("token")
+	cache.mu.Lock()
+	entry := cache.entries[key]
+	entry.at = time.Now().Add(-2 * time.Minute)
+	cache.entries[key] = entry
+	cache.mu.Unlock()
+
+	results := make(chan error, 2)
+	go func() { _, err := cache.Resources(context.Background(), client, "token", time.Minute); results <- err }()
+	<-refreshStarted
+	go func() { _, err := cache.Resources(context.Background(), client, "token", time.Minute); results <- err }()
+	prematureSecondRefresh := false
+	select {
+	case <-thirdRequest:
+		prematureSecondRefresh = true
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(releaseRefresh)
+	for range 2 {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if prematureSecondRefresh {
+		t.Fatal("same-key refresh issued a second discovery request")
+	}
+	previous, ok := cache.PreviousResources(client, "token", time.Minute)
+	if !ok || len(previous) != 1 || previous[0].ClientIdentifier != "id-1" {
+		t.Fatalf("previous=%+v ok=%t, want pre-refresh snapshot id-1", previous, ok)
+	}
+}
+
+func TestResourceCacheRefreshDoesNotInheritInitiatorCancellation(t *testing.T) {
+	requestStarted := make(chan struct{})
+	releaseResponse := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/resources" {
+			http.NotFound(w, r)
+			return
+		}
+		close(requestStarted)
+		<-releaseResponse
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = w.Write([]byte(`<MediaContainer><Device name="fresh" clientIdentifier="fresh"/></MediaContainer>`))
+	}))
+	defer server.Close()
+
+	cache := NewResourceCache()
+	client := New(server.URL, "test", &http.Client{})
+	initiator, cancel := context.WithCancel(context.Background())
+	initiatorResult := make(chan error, 1)
+	go func() { _, err := cache.Resources(initiator, client, "token", time.Minute); initiatorResult <- err }()
+	<-requestStarted
+
+	waiterResult := make(chan error, 1)
+	go func() {
+		_, err := cache.Resources(context.Background(), client, "token", time.Minute)
+		waiterResult <- err
+	}()
+	cancel()
+	ownerBlocked := false
+	select {
+	case err := <-initiatorResult:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("initiator err=%v, want context cancellation", err)
+		}
+	case <-time.After(time.Second):
+		ownerBlocked = true
+	}
+	close(releaseResponse)
+	if ownerBlocked {
+		t.Fatal("refresh owner remained blocked after its context was canceled")
+	}
+	if err := <-waiterResult; err != nil {
+		t.Fatalf("healthy waiter inherited initiator cancellation: %v", err)
 	}
 }
 

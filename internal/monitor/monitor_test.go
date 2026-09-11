@@ -86,6 +86,25 @@ func TestHandlerReportsCorrelationWithoutChangingFailureStatus(t *testing.T) {
 	}
 }
 
+func TestHandlerDoesNotCorrelateConfigurationFailures(t *testing.T) {
+	var event *CorrelationEvent
+	h := Handler{
+		Correlation:   NewCorrelationTracker(time.Minute, 2, time.Now),
+		OnCorrelation: func(got CorrelationEvent) { event = &got },
+		Resolve:       func(string, string) (*pms.Client, error) { return nil, errors.New("bad local configuration") },
+	}
+	for _, path := range []string{"/plex/account/one", "/plex/account/two"} {
+		r := httptest.NewRecorder()
+		h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, path, nil))
+		if r.Code != http.StatusNotFound {
+			t.Fatalf("status=%d, want configuration 404", r.Code)
+		}
+	}
+	if event != nil {
+		t.Fatalf("configuration failures emitted correlation event: %+v", event)
+	}
+}
+
 func TestHandlerDoesNotExposeResolverErrorDetail(t *testing.T) {
 	secret := "https://private.example/?token=secret"
 	h := Handler{Resolve: func(string, string) (*pms.Client, error) {

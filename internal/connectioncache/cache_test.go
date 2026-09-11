@@ -1,6 +1,7 @@
 package connectioncache
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -54,6 +55,24 @@ func TestStoreRetainsThreeMostRecentDistinctValidatedConnections(t *testing.T) {
 		if got[i].URI != want[i] {
 			t.Fatalf("candidate[%d] = %q, want %q", i, got[i].URI, want[i])
 		}
+	}
+}
+
+func TestStorePreservesLegacyCurrentConnectionOnFirstWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "connections.json")
+	old := plexauth.Connection{URI: "https://old.example:32400"}
+	if err := os.WriteFile(path, []byte(`{"connections":{"account\u0000machine":{"uri":"https://old.example:32400"}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := New(path).Put("account", "machine", plexauth.Connection{URI: "https://new.example:32400"}); err != nil {
+		t.Fatal(err)
+	}
+	candidates, err := New(path).Candidates("account", "machine")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 2 || candidates[0].URI != "https://new.example:32400" || candidates[1] != old {
+		t.Fatalf("candidates=%+v, want new then legacy old", candidates)
 	}
 }
 

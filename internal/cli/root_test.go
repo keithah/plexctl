@@ -442,6 +442,14 @@ func TestMatchingServeResourcesUsesConfiguredMachineIdentity(t *testing.T) {
 	}
 }
 
+func TestMatchingServeResourcesUsesProfileNameForIdentitylessProfile(t *testing.T) {
+	resources := []plexauth.Resource{{Name: "Alpha"}}
+	matches := matchingServeResources(resources, config.ServerProfile{Name: "Alpha"}, "account-cdac42a10e36")
+	if len(matches) != 1 || matches[0].Name != "Alpha" {
+		t.Fatalf("matches=%+v, want identity-less profile name match", matches)
+	}
+}
+
 func TestResolveConfiguredConnectionFallsBackToCurrentV2ServerLegacyEntry(t *testing.T) {
 	resolved, err := resolveConfiguredConnection(config.Config{
 		Current:       "legacy-default",

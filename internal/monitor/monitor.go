@@ -53,8 +53,8 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	client, err := h.Resolve(account, server)
 	if err != nil {
-		h.reportFailure(account, server)
 		if errors.Is(err, ErrDiscoveryUnavailable) {
+			h.reportFailure(account, server)
 			writeError(w, http.StatusServiceUnavailable, "discovery", "discovery")
 			return
 		}
@@ -62,7 +62,6 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if client == nil {
-		h.reportFailure(account, server)
 		writeError(w, http.StatusInternalServerError, "configuration", "configuration")
 		return
 	}
