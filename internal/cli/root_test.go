@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/keithah/plexctl/internal/config"
 	"github.com/keithah/plexctl/internal/connectioncache"
+	"github.com/keithah/plexctl/internal/monitor"
 	"github.com/keithah/plexctl/internal/plexauth"
 )
 
@@ -377,6 +379,77 @@ func TestResolveCachedServeTargetFallsBackWhenIdentityNoLongerMatches(t *testing
 		t.Fatal("cache selected an endpoint with the wrong machine identifier")
 	}
 }
+
+func TestServeCandidatesLimitsCombinedCandidatesToThree(t *testing.T) {
+	cached := []plexauth.Connection{
+		{URI: "https://one.example:32400"},
+		{URI: "https://two.example:32400"},
+		{URI: "https://three.example:32400"},
+	}
+	got := serveCandidates(cached, config.ServerProfile{URL: "https://profile.example:32400"})
+	if len(got) != 3 {
+		t.Fatalf("candidate count=%d, want 3", len(got))
+	}
+	for i, want := range []string{"https://one.example:32400", "https://two.example:32400", "https://three.example:32400"} {
+		if got[i].URI != want {
+			t.Fatalf("candidate[%d]=%q, want %q", i, got[i].URI, want)
+		}
+	}
+}
+
+func TestResolveCachedServeTargetUsesOlderValidatedCandidate(t *testing.T) {
+	valid := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"MediaContainer":{"machineIdentifier":"machine"}}`))
+	}))
+	defer valid.Close()
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer dead.Close()
+
+	cache := connectioncache.New(filepath.Join(t.TempDir(), "connections.json"))
+	if err := cache.Put("account", "machine", plexauth.Connection{URI: valid.URL, Local: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.Put("account", "machine", plexauth.Connection{URI: dead.URL, Local: true}); err != nil {
+		t.Fatal(err)
+	}
+	client, ok, err := resolveCachedServeTarget(context.Background(), cache, "account", config.ServerProfile{MachineIdentifier: "machine"}, "token")
+	if err != nil || !ok {
+		t.Fatalf("resolveCachedServeTarget ok=%t err=%v, want valid older candidate", ok, err)
+	}
+	identity, err := client.Identity(context.Background())
+	if err != nil || identity.MediaContainer.MachineIdentifier != "machine" {
+		t.Fatalf("identity=%+v err=%v", identity, err)
+	}
+}
+
+func TestDiscoveryErrorUsesUnavailableSentinel(t *testing.T) {
+	if !errors.Is(discoveryError("ambiguous advertised server"), monitor.ErrDiscoveryUnavailable) {
+		t.Fatal("discovery error must map to monitor discovery unavailability")
+	}
+}
+
+func TestMatchingServeResourcesUsesConfiguredMachineIdentity(t *testing.T) {
+	resources := []plexauth.Resource{
+		{Name: "expected", ClientIdentifier: "machine"},
+		{Name: "same-name-wrong-machine", ClientIdentifier: "other"},
+	}
+	matches := matchingServeResources(resources, config.ServerProfile{MachineIdentifier: "machine"}, "expected")
+	if len(matches) != 1 || matches[0].ClientIdentifier != "machine" {
+		t.Fatalf("matches=%+v, want one expected machine", matches)
+	}
+}
+
+func TestMatchingServeResourcesUsesProfileNameForIdentitylessProfile(t *testing.T) {
+	resources := []plexauth.Resource{{Name: "Alpha"}}
+	matches := matchingServeResources(resources, config.ServerProfile{Name: "Alpha"}, "account-cdac42a10e36")
+	if len(matches) != 1 || matches[0].Name != "Alpha" {
+		t.Fatalf("matches=%+v, want identity-less profile name match", matches)
+	}
+}
+
 func TestResolveConfiguredConnectionFallsBackToCurrentV2ServerLegacyEntry(t *testing.T) {
 	resolved, err := resolveConfiguredConnection(config.Config{
 		Current:       "legacy-default",

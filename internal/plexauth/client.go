@@ -136,18 +136,34 @@ type Connection struct {
 }
 
 type resourceCacheEntry struct {
-	resources []Resource
-	at        time.Time
+	resources  []Resource
+	at         time.Time
+	previous   []Resource
+	previousAt time.Time
 }
 
 type ResourceCache struct {
-	mu      sync.Mutex
-	entries map[string]resourceCacheEntry
+	mu        sync.Mutex
+	entries   map[string]resourceCacheEntry
+	refreshes map[string]*resourceRefresh
+}
+
+type resourceRefresh struct {
+	done      chan struct{}
+	resources []Resource
+	err       error
+	prior     resourceCacheEntry
+	hadPrior  bool
 }
 
 func NewResourceCache() *ResourceCache {
-	return &ResourceCache{entries: make(map[string]resourceCacheEntry)}
+	return &ResourceCache{
+		entries:   make(map[string]resourceCacheEntry),
+		refreshes: make(map[string]*resourceRefresh),
+	}
 }
+
+const resourceCacheRefreshTimeout = 30 * time.Second
 
 // Resources returns cached discovery only while it is within ttl. A failed or
 // expired refresh is never replaced with stale data, preserving Plex.tv as the
@@ -165,19 +181,71 @@ func (c *ResourceCache) Resources(ctx context.Context, client *Client, token str
 		c.mu.Unlock()
 		return resources, nil
 	}
+	if refresh, refreshing := c.refreshes[key]; refreshing {
+		c.mu.Unlock()
+		return waitForResourceRefresh(ctx, refresh)
+	}
+	refresh := &resourceRefresh{done: make(chan struct{}), prior: entry, hadPrior: ok}
+	c.refreshes[key] = refresh
 	c.mu.Unlock()
 
-	resources, err := client.Resources(ctx, token)
-	if err != nil {
-		c.mu.Lock()
-		delete(c.entries, key)
-		c.mu.Unlock()
-		return nil, err
+	go c.refreshResources(key, refresh, client, token)
+	return waitForResourceRefresh(ctx, refresh)
+}
+
+func waitForResourceRefresh(ctx context.Context, refresh *resourceRefresh) ([]Resource, error) {
+	select {
+	case <-refresh.done:
+		if refresh.err != nil {
+			return nil, refresh.err
+		}
+		return cloneResources(refresh.resources), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
+}
+
+func (c *ResourceCache) refreshResources(key string, refresh *resourceRefresh, client *Client, token string) {
+	ctx, cancel := context.WithTimeout(context.Background(), resourceCacheRefreshTimeout)
+	defer cancel()
+	resources, err := client.Resources(ctx, token)
 	c.mu.Lock()
-	c.entries[key] = resourceCacheEntry{resources: cloneResources(resources), at: time.Now()}
+	refresh.err = err
+	if err != nil {
+		delete(c.entries, key)
+	} else {
+		refreshedAt := time.Now()
+		newEntry := resourceCacheEntry{resources: cloneResources(resources), at: refreshedAt}
+		if refresh.hadPrior {
+			newEntry.previous = cloneResources(refresh.prior.resources)
+			// Retention starts when this complete snapshot is superseded, not when
+			// it was initially fetched. Otherwise a normal TTL refresh would make
+			// the retained fallback immediately ineligible.
+			newEntry.previousAt = refreshedAt
+		}
+		c.entries[key] = newEntry
+		refresh.resources = cloneResources(resources)
+	}
+	delete(c.refreshes, key)
+	close(refresh.done)
 	c.mu.Unlock()
-	return resources, nil
+}
+
+// PreviousResources returns the last complete discovery snapshot after a newer
+// one has replaced it. It is only a candidate source; callers must validate a
+// connection and the expected PMS identity before using it.
+func (c *ResourceCache) PreviousResources(client *Client, token string, maxAge time.Duration) ([]Resource, bool) {
+	if c == nil || maxAge <= 0 {
+		return nil, false
+	}
+	key := client.BaseURL + "\x00" + client.ClientID + "\x00" + tokenCacheKey(token)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[key]
+	if !ok || entry.previousAt.IsZero() || time.Since(entry.previousAt) > maxAge {
+		return nil, false
+	}
+	return cloneResources(entry.previous), true
 }
 
 func (c *ResourceCache) Invalidate() {
