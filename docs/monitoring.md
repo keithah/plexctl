@@ -47,9 +47,9 @@ The handler should:
 2. Resolve credentials only at runtime from the OS credential store.
 3. Validate that server's durable, token-free cached endpoints against its stable
    machine identifier. A successful cache validation skips Plex.tv entirely. The
-   adapter probes no more than three endpoints total: when a persisted profile
-   URL exists, it reserves one probe for that durable fallback and uses at most
-   two cached candidates before it. Never use any candidate blindly.
+   adapter probes no more than three distinct endpoints total: when a persisted
+   profile URL exists, it is a durable fallback unless it already matches a
+   cached candidate. Never probe the same URI twice or use any candidate blindly.
 4. On cache and profile validation failure, discover current Plex.tv candidates,
    validate them, and atomically replace the cache only after one matches.
 5. Run the bounded deep health check.

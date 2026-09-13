@@ -1784,21 +1784,42 @@ const maxServeCandidates = 3
 
 // serveCandidates limits all cache and profile endpoint probes to the same
 // bounded budget. When configured, the profile endpoint always receives one
-// probe because it is the durable fallback when cached history is stale. Every
-// returned candidate still requires an identity probe.
+// probe because it is the durable fallback when cached history is stale. If it
+// is already cached, that probe is satisfied by the cached candidate without
+// consuming a second slot. Every returned candidate still requires an identity
+// probe.
 func serveCandidates(cached []plexauth.Connection, profile config.ServerProfile) []plexauth.Connection {
-	cachedLimit := maxServeCandidates
-	if profile.URL != "" {
-		cachedLimit--
+	candidates := make([]plexauth.Connection, 0, maxServeCandidates)
+	profilePending := profile.URL != ""
+	for _, candidate := range cached {
+		if candidate.URI == "" || containsServeCandidate(candidates, candidate) {
+			continue
+		}
+		isProfile := profilePending && candidate.URI == profile.URL
+		if !isProfile && profilePending && len(candidates) == maxServeCandidates-1 {
+			continue
+		}
+		candidates = append(candidates, candidate)
+		if isProfile {
+			profilePending = false
+		}
+		if len(candidates) == maxServeCandidates {
+			return candidates
+		}
 	}
-	if len(cached) > cachedLimit {
-		cached = cached[:cachedLimit]
-	}
-	candidates := append([]plexauth.Connection(nil), cached...)
-	if profile.URL != "" {
+	if profilePending && len(candidates) < maxServeCandidates {
 		candidates = append(candidates, plexauth.Connection{URI: profile.URL, Local: profile.Local, Relay: profile.Relay})
 	}
 	return candidates
+}
+
+func containsServeCandidate(candidates []plexauth.Connection, candidate plexauth.Connection) bool {
+	for _, existing := range candidates {
+		if existing.URI == candidate.URI {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveFreshServeTarget uses a previously validated endpoint whenever it is

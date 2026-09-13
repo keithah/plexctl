@@ -433,6 +433,23 @@ func TestServeCandidatesReservesProbeForConfiguredProfile(t *testing.T) {
 	}
 }
 
+func TestServeCandidatesDoesNotDuplicateCachedProfileEndpoint(t *testing.T) {
+	cached := []plexauth.Connection{
+		{URI: "https://profile.example:32400"},
+		{URI: "https://stale.example:32400"},
+		{URI: "https://healthy.example:32400"},
+	}
+	got := serveCandidates(cached, config.ServerProfile{URL: "https://profile.example:32400"})
+	if len(got) != 3 {
+		t.Fatalf("candidate count=%d, want 3", len(got))
+	}
+	for i, want := range []string{"https://profile.example:32400", "https://stale.example:32400", "https://healthy.example:32400"} {
+		if got[i].URI != want {
+			t.Fatalf("candidate[%d]=%q, want %q", i, got[i].URI, want)
+		}
+	}
+}
+
 func TestResolveCachedServeTargetUsesOlderValidatedCandidate(t *testing.T) {
 	valid := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
