@@ -360,6 +360,42 @@ func TestResolveCachedServeTargetSeedsCacheFromValidatedProfileURL(t *testing.T)
 	}
 }
 
+func TestResolveCachedServeTargetReservesProbeForConfiguredProfile(t *testing.T) {
+	var staleRequests int
+	cache := connectioncache.New(filepath.Join(t.TempDir(), "connections.json"))
+	for i := 0; i < 3; i++ {
+		stale := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			staleRequests++
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+		}))
+		defer stale.Close()
+		if err := cache.Put("account", "machine", plexauth.Connection{URI: stale.URL, Local: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	profileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"MediaContainer":{"machineIdentifier":"machine"}}`))
+	}))
+	defer profileServer.Close()
+
+	client, ok, err := resolveCachedServeTarget(context.Background(), cache, "account", config.ServerProfile{
+		MachineIdentifier: "machine",
+		URL:               profileServer.URL,
+		Local:             true,
+	}, "token")
+	if err != nil || !ok {
+		t.Fatalf("resolveCachedServeTarget ok=%t err=%v, want configured-profile fallback", ok, err)
+	}
+	if staleRequests != 2 {
+		t.Fatalf("stale endpoint requests=%d, want two before configured profile", staleRequests)
+	}
+	identity, err := client.Identity(context.Background())
+	if err != nil || identity.MediaContainer.MachineIdentifier != "machine" {
+		t.Fatalf("identity=%+v err=%v", identity, err)
+	}
+}
+
 func TestResolveCachedServeTargetFallsBackWhenIdentityNoLongerMatches(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -380,7 +416,7 @@ func TestResolveCachedServeTargetFallsBackWhenIdentityNoLongerMatches(t *testing
 	}
 }
 
-func TestServeCandidatesLimitsCombinedCandidatesToThree(t *testing.T) {
+func TestServeCandidatesReservesProbeForConfiguredProfile(t *testing.T) {
 	cached := []plexauth.Connection{
 		{URI: "https://one.example:32400"},
 		{URI: "https://two.example:32400"},
@@ -390,7 +426,7 @@ func TestServeCandidatesLimitsCombinedCandidatesToThree(t *testing.T) {
 	if len(got) != 3 {
 		t.Fatalf("candidate count=%d, want 3", len(got))
 	}
-	for i, want := range []string{"https://one.example:32400", "https://two.example:32400", "https://three.example:32400"} {
+	for i, want := range []string{"https://one.example:32400", "https://two.example:32400", "https://profile.example:32400"} {
 		if got[i].URI != want {
 			t.Fatalf("candidate[%d]=%q, want %q", i, got[i].URI, want)
 		}

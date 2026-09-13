@@ -54,6 +54,15 @@ func TestHandlerHealthyAndUnhealthy(t *testing.T) {
 	if got["ok"] != true || got["classification"] != "ok" || got["duration_ms"] == nil {
 		t.Fatalf("unexpected response: %v", got)
 	}
+	wantFields := map[string]bool{"ok": true, "classification": true, "stage": true, "duration_ms": true}
+	if len(got) != len(wantFields) {
+		t.Fatalf("response fields=%v, want only %v", got, wantFields)
+	}
+	for field := range got {
+		if !wantFields[field] {
+			t.Fatalf("response exposed unexpected field %q: %v", field, got)
+		}
+	}
 
 	r = httptest.NewRecorder()
 	h.ServeHTTP(r, httptest.NewRequest(http.MethodPost, "/plex/keith/SF2", nil))
@@ -114,6 +123,22 @@ func TestHandlerDoesNotExposeResolverErrorDetail(t *testing.T) {
 	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/plex/account/server", nil))
 	if r.Code != http.StatusNotFound || contains(r.Body.String(), secret) {
 		t.Fatalf("status=%d body=%s, resolver detail leaked", r.Code, r.Body)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(r.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["classification"] != "configuration" || body["stage"] != "configuration" {
+		t.Fatalf("error response=%v, want configuration classification and stage", body)
+	}
+	wantFields := map[string]bool{"ok": true, "classification": true, "stage": true}
+	if len(body) != len(wantFields) {
+		t.Fatalf("error fields=%v, want only %v", body, wantFields)
+	}
+	for field := range body {
+		if !wantFields[field] {
+			t.Fatalf("error response exposed unexpected field %q: %v", field, body)
+		}
 	}
 }
 

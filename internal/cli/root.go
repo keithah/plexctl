@@ -1764,15 +1764,23 @@ func resolveCachedServeTarget(ctx context.Context, connections *connectioncache.
 	return nil, false, nil
 }
 
+const maxServeCandidates = 3
+
 // serveCandidates limits all cache and profile endpoint probes to the same
-// bounded budget. Every returned candidate still requires an identity probe.
+// bounded budget. When configured, the profile endpoint always receives one
+// probe because it is the durable fallback when cached history is stale. Every
+// returned candidate still requires an identity probe.
 func serveCandidates(cached []plexauth.Connection, profile config.ServerProfile) []plexauth.Connection {
+	cachedLimit := maxServeCandidates
+	if profile.URL != "" {
+		cachedLimit--
+	}
+	if len(cached) > cachedLimit {
+		cached = cached[:cachedLimit]
+	}
 	candidates := append([]plexauth.Connection(nil), cached...)
 	if profile.URL != "" {
 		candidates = append(candidates, plexauth.Connection{URI: profile.URL, Local: profile.Local, Relay: profile.Relay})
-	}
-	if len(candidates) > 3 {
-		candidates = candidates[:3]
 	}
 	return candidates
 }

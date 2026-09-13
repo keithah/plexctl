@@ -14,14 +14,15 @@ repository does not currently ship an MCP server. The current monitor adapter
 (running at `plexctl-monitor:3003`) replaces the retired `plex-monitor:3002`
 service; Kuma monitors point at the adapter URL, not at a Plex URL directly.
 See [Monitoring integration](monitoring.md) for the adapter contract and the
-Kuma URL mapping (`/plex/<account>/<server>` → 200/503 with redacted JSON
-detail, bounded library plus media-byte verification, and cycle/depth-capped
-media probes).
+Kuma URL mapping (`/plex/<account>/<server>` → 200/503 with safe JSON
+stage/classification fields, bounded library plus media-byte verification, and
+cycle/depth-capped media probes).
 
 `serve` keeps a durable, token-free cache of **previously identity-validated**
 PMS connections. A healthy cached endpoint is used before contacting Plex.tv.
-On a cold cache, the persisted profile URL is treated only as an identity-checked
-bootstrap candidate; it is cached only after that validation succeeds.
+When a persisted profile URL exists, it remains an identity-checked fallback
+within the three-endpoint probe budget; the adapter tries at most two cached
+candidates before that profile URL. It is cached only after validation succeeds.
 Discovery is used only after cache/profile validation fails, and a newly
 discovered endpoint replaces the cache only after validation. The cache is an
 availability optimization, not blind URL fallback: if the cached endpoint,

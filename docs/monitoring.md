@@ -45,23 +45,27 @@ The handler should:
 
 1. Resolve the named account and server from the persisted configuration.
 2. Resolve credentials only at runtime from the OS credential store.
-3. Validate that server's durable, token-free cached endpoint against its stable
-   machine identifier. A successful cache validation skips Plex.tv entirely.
-   On a cold cache, validate the persisted profile URL before treating it as a
-   cache seed; never use it blindly.
+3. Validate that server's durable, token-free cached endpoints against its stable
+   machine identifier. A successful cache validation skips Plex.tv entirely. The
+   adapter probes no more than three endpoints total: when a persisted profile
+   URL exists, it reserves one probe for that durable fallback and uses at most
+   two cached candidates before it. Never use any candidate blindly.
 4. On cache and profile validation failure, discover current Plex.tv candidates,
    validate them, and atomically replace the cache only after one matches.
 5. Run the bounded deep health check.
-6. Return a small, safe JSON response with the server name, stage,
-   classification, duration, and redacted detail.
+6. Return a small privacy-preserving JSON response containing only `ok`,
+   `stage`, `classification`, and (for completed health checks) `duration_ms`.
+   The account and server path selectors, URLs, tokens, media names, request or
+   response bodies, and upstream error detail must never be echoed.
 7. Return HTTP 200 only for a healthy result. Return HTTP 503 for an unhealthy
-   result, with 401/403, timeout, identity, and library classifications retained
-   in the body for diagnosis.
+   result, with a safe stage/classification pair retained in the body for
+   diagnosis.
 
-The adapter should bind to loopback or a private interface by default. It must
-not expose Plex tokens, credential values, authenticated URLs, or full upstream
-responses. A reverse proxy can publish it to Kuma if Kuma cannot reach the
-private bind address directly.
+The adapter should bind to loopback or a private interface by default. Its
+responses and logs must not expose account or server identifiers, Plex tokens,
+credential values, authenticated URLs, media names, request/response bodies, or
+upstream error detail. A reverse proxy can publish it to Kuma if Kuma cannot
+reach the private bind address directly.
 
 Example healthy response shape (illustrative; the exact schema is versioned
 in the adapter tests):
@@ -69,11 +73,19 @@ in the adapter tests):
 ```json
 {
   "ok": true,
-  "account": "keithah",
-  "server": "SF2",
   "stage": "library",
   "classification": "ok",
   "duration_ms": 142
+}
+```
+
+A resolution/configuration error uses the same safe shape without a duration:
+
+```json
+{
+  "ok": false,
+  "stage": "configuration",
+  "classification": "configuration"
 }
 ```
 
