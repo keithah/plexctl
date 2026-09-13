@@ -523,6 +523,19 @@ func TestResolveServeProfileCanonicalizesDisplayAndKeyAliases(t *testing.T) {
 	}
 }
 
+func TestResolveServeProfilePrefersCaseInsensitiveKeyOverDisplayName(t *testing.T) {
+	cfg := config.Config{ServersV2: map[string]config.ServerProfile{
+		"alpha": {Account: "account", Name: "Primary"},
+		"beta":  {Account: "account", Name: "ALPHA"},
+	}}
+	for _, requested := range []string{"alpha", "ALPHA"} {
+		key, profile, err := resolveServeProfile(cfg, "account", requested)
+		if err != nil || key != "alpha" || profile.Name != "Primary" {
+			t.Fatalf("resolveServeProfile(%q) = %q, %+v, %v; want alpha Primary nil", requested, key, profile, err)
+		}
+	}
+}
+
 func TestResolveConfiguredConnectionFallsBackToCurrentV2ServerLegacyEntry(t *testing.T) {
 	resolved, err := resolveConfiguredConnection(config.Config{
 		Current:       "legacy-default",

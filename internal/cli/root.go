@@ -1710,15 +1710,18 @@ func resolveServeProfile(c config.Config, account, server string) (string, confi
 		}
 		return server, p, nil
 	}
+	// Profile keys are canonical monitor selectors. Case-insensitive key aliases
+	// take precedence over display names so an alias cannot redirect aggregate
+	// correlation to a different configured profile.
 	var candidates []string
 	for id, prof := range c.ServersV2 {
-		if prof.Account == account && strings.EqualFold(prof.Name, server) {
+		if prof.Account == account && strings.EqualFold(id, server) {
 			candidates = append(candidates, id)
 		}
 	}
 	if len(candidates) == 0 {
 		for id, prof := range c.ServersV2 {
-			if prof.Account == account && strings.EqualFold(id, server) {
+			if prof.Account == account && strings.EqualFold(prof.Name, server) {
 				candidates = append(candidates, id)
 			}
 		}

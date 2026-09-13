@@ -21,9 +21,10 @@ cycle/depth-capped media probes).
 `serve` keeps a durable, token-free cache of **previously identity-validated**
 PMS connections. A healthy cached endpoint is used before contacting Plex.tv.
 When a persisted profile URL exists, it remains an identity-checked fallback
-within the three-distinct-endpoint probe budget unless it already matches a
-cached candidate; the adapter never spends two probes on the same URI. It is
-cached only after validation succeeds. Discovery is used only after
+within the three-distinct-endpoint pre-discovery probe budget unless it already
+matches a cached candidate; that pre-discovery sequence never spends two probes
+on the same URI. It is cached only after validation succeeds. Discovery is used
+only after
 cache/profile validation fails, and a newly discovered endpoint replaces the
 cache only after validation. The cache is an availability optimization, not
 blind URL fallback: if the cached endpoint, profile candidate, and fresh
