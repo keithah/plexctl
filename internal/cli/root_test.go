@@ -486,6 +486,26 @@ func TestMatchingServeResourcesUsesProfileNameForIdentitylessProfile(t *testing.
 	}
 }
 
+func TestMatchingServeResourcesFallsBackToConfiguredKeyWhenProfileNameMissing(t *testing.T) {
+	resources := []plexauth.Resource{{Name: "Alpha"}}
+	matches := matchingServeResources(resources, config.ServerProfile{}, "Alpha")
+	if len(matches) != 1 || matches[0].Name != "Alpha" {
+		t.Fatalf("matches=%+v, want identity-less configured-key fallback", matches)
+	}
+}
+
+func TestResolveServeProfileCanonicalizesDisplayAndKeyAliases(t *testing.T) {
+	cfg := config.Config{ServersV2: map[string]config.ServerProfile{
+		"profile-key": {Account: "account", Name: "Alpha"},
+	}}
+	for _, requested := range []string{"Alpha", "PROFILE-KEY"} {
+		key, profile, err := resolveServeProfile(cfg, "account", requested)
+		if err != nil || key != "profile-key" || profile.Name != "Alpha" {
+			t.Fatalf("resolveServeProfile(%q) = %q, %+v, %v", requested, key, profile, err)
+		}
+	}
+}
+
 func TestResolveConfiguredConnectionFallsBackToCurrentV2ServerLegacyEntry(t *testing.T) {
 	resolved, err := resolveConfiguredConnection(config.Config{
 		Current:       "legacy-default",

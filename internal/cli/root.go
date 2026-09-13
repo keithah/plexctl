@@ -1663,8 +1663,8 @@ func serveCmd(o *options) *cobra.Command {
 			OnCorrelation: func(event monitor.CorrelationEvent) {
 				log.Print(event.String())
 			},
-			Resolve: func(account, server string) (*pms.Client, error) {
-				return resolveServeTargetCached(o, account, server, resources, connections)
+			Resolve: func(account, server string) (monitor.ResolvedTarget, error) {
+				return resolveServeMonitorTarget(o, account, server, resources, connections)
 			},
 		}
 		s := &http.Server{Addr: listen, Handler: h}
@@ -1680,42 +1680,58 @@ func resolveServeTarget(o *options, account, server string) (*pms.Client, error)
 }
 
 func resolveServeTargetCached(o *options, account, server string, resources *plexauth.ResourceCache, connections *connectioncache.Store) (*pms.Client, error) {
+	target, err := resolveServeMonitorTarget(o, account, server, resources, connections)
+	return target.Client, err
+}
+
+// resolveServeMonitorTarget resolves a monitor selector to its client and a
+// stable configured-profile key. The key keeps correlation aggregate-only even
+// when a single profile is reachable through several case-insensitive aliases.
+func resolveServeMonitorTarget(o *options, account, server string, resources *plexauth.ResourceCache, connections *connectioncache.Store) (monitor.ResolvedTarget, error) {
 	c, err := config.Load(config.Path())
 	if err != nil {
-		return nil, err
+		return monitor.ResolvedTarget{}, err
 	}
+	configuredKey, profile, err := resolveServeProfile(c, account, server)
+	if err != nil {
+		return monitor.ResolvedTarget{}, err
+	}
+	target := monitor.ResolvedTarget{CorrelationKey: configuredKey}
+	target.Client, err = resolveFreshServeTarget(o, c, account, server, profile, resources, connections)
+	return target, err
+}
+
+func resolveServeProfile(c config.Config, account, server string) (string, config.ServerProfile, error) {
 	// Profiles provide stable identity and account binding only. Their URL is
 	// deliberately ignored: Plex.tv may advertise a different connection later.
-	var profile config.ServerProfile
 	if p, ok := c.ServersV2[server]; ok {
 		if p.Account != account {
-			return nil, fmt.Errorf("server %q belongs to account %q", server, p.Account)
+			return "", config.ServerProfile{}, fmt.Errorf("server %q belongs to account %q", server, p.Account)
 		}
-		profile = p
-	} else {
-		var candidates []string
+		return server, p, nil
+	}
+	var candidates []string
+	for id, prof := range c.ServersV2 {
+		if prof.Account == account && strings.EqualFold(prof.Name, server) {
+			candidates = append(candidates, id)
+		}
+	}
+	if len(candidates) == 0 {
 		for id, prof := range c.ServersV2 {
-			if prof.Account == account && strings.EqualFold(prof.Name, server) {
+			if prof.Account == account && strings.EqualFold(id, server) {
 				candidates = append(candidates, id)
 			}
 		}
-		if len(candidates) == 0 {
-			for id, prof := range c.ServersV2 {
-				if prof.Account == account && strings.EqualFold(id, server) {
-					candidates = append(candidates, id)
-				}
-			}
-		}
-		if len(candidates) == 0 {
-			return nil, fmt.Errorf("server %q is not configured", server)
-		}
-		sort.Strings(candidates)
-		if len(candidates) > 1 {
-			return nil, fmt.Errorf("server %q matches multiple profiles: %s", server, strings.Join(candidates, ", "))
-		}
-		profile = c.ServersV2[candidates[0]]
 	}
-	return resolveFreshServeTarget(o, c, account, server, profile, resources, connections)
+	if len(candidates) == 0 {
+		return "", config.ServerProfile{}, fmt.Errorf("server %q is not configured", server)
+	}
+	sort.Strings(candidates)
+	if len(candidates) > 1 {
+		return "", config.ServerProfile{}, fmt.Errorf("server %q matches multiple profiles: %s", server, strings.Join(candidates, ", "))
+	}
+	key := candidates[0]
+	return key, c.ServersV2[key], nil
 }
 
 func cachedServeToken(profile config.ServerProfile, accountToken string) (string, error) {
@@ -1844,12 +1860,16 @@ func discoveryError(reason string) error {
 	return fmt.Errorf("%w: %s", monitor.ErrDiscoveryUnavailable, reason)
 }
 
-func matchingServeResources(resources []plexauth.Resource, profile config.ServerProfile, _ string) []plexauth.Resource {
+func matchingServeResources(resources []plexauth.Resource, profile config.ServerProfile, requested string) []plexauth.Resource {
+	name := profile.Name
+	if name == "" {
+		name = requested
+	}
 	var matches []plexauth.Resource
 	for _, resource := range resources {
 		if profile.MachineIdentifier != "" && resource.ClientIdentifier == profile.MachineIdentifier {
 			matches = append(matches, resource)
-		} else if profile.MachineIdentifier == "" && strings.EqualFold(resource.Name, profile.Name) {
+		} else if profile.MachineIdentifier == "" && name != "" && strings.EqualFold(resource.Name, name) {
 			matches = append(matches, resource)
 		}
 	}

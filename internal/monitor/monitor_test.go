@@ -36,11 +36,11 @@ func TestHandlerHealthyAndUnhealthy(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := pms.New(a)
-	h := Handler{Timeout: time.Second, Resolve: func(account, server string) (*pms.Client, error) {
+	h := Handler{Timeout: time.Second, Resolve: func(account, server string) (ResolvedTarget, error) {
 		if account != "keith" || server != "SF2" {
 			t.Fatalf("unexpected target %s/%s", account, server)
 		}
-		return client, nil
+		return ResolvedTarget{Client: client}, nil
 	}}
 	r := httptest.NewRecorder()
 	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/plex/keith/SF2", nil))
@@ -79,8 +79,8 @@ func TestHandlerReportsCorrelationWithoutChangingFailureStatus(t *testing.T) {
 		OnCorrelation: func(got CorrelationEvent) {
 			event = &got
 		},
-		Resolve: func(string, string) (*pms.Client, error) {
-			return nil, ErrDiscoveryUnavailable
+		Resolve: func(_ string, server string) (ResolvedTarget, error) {
+			return ResolvedTarget{CorrelationKey: server}, ErrDiscoveryUnavailable
 		},
 	}
 	for _, path := range []string{"/plex/account/one", "/plex/account/two"} {
@@ -95,12 +95,65 @@ func TestHandlerReportsCorrelationWithoutChangingFailureStatus(t *testing.T) {
 	}
 }
 
+func TestHandlerDoesNotOvercountAliasTargetsForCorrelation(t *testing.T) {
+	var event *CorrelationEvent
+	h := Handler{
+		Correlation:   NewCorrelationTracker(time.Minute, 2, time.Now),
+		OnCorrelation: func(got CorrelationEvent) { event = &got },
+		Resolve: func(_ string, server string) (ResolvedTarget, error) {
+			key := "profile-alpha"
+			if server == "Beta" {
+				key = "profile-beta"
+			}
+			return ResolvedTarget{CorrelationKey: key}, ErrDiscoveryUnavailable
+		},
+	}
+	for _, path := range []string{"/plex/account/Alpha", "/plex/account/alpha", "/plex/account/ALPHA"} {
+		r := httptest.NewRecorder()
+		h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, path, nil))
+		if r.Code != http.StatusServiceUnavailable {
+			t.Fatalf("%s: status=%d, want 503", path, r.Code)
+		}
+	}
+	if event != nil {
+		t.Fatalf("aliases emitted false multi-target event: %+v", event)
+	}
+	r := httptest.NewRecorder()
+	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/plex/account/Beta", nil))
+	if event == nil || event.TargetCount != 2 {
+		t.Fatalf("event=%+v, want two canonical targets", event)
+	}
+}
+
+func TestHandlerDoesNotCorrelateUnkeyedDiscoveryFailures(t *testing.T) {
+	var event *CorrelationEvent
+	h := Handler{
+		Correlation:   NewCorrelationTracker(time.Minute, 2, time.Now),
+		OnCorrelation: func(got CorrelationEvent) { event = &got },
+		Resolve: func(string, string) (ResolvedTarget, error) {
+			return ResolvedTarget{}, ErrDiscoveryUnavailable
+		},
+	}
+	for _, path := range []string{"/plex/account/one", "/plex/account/two"} {
+		r := httptest.NewRecorder()
+		h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, path, nil))
+		if r.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status=%d, want 503", r.Code)
+		}
+	}
+	if event != nil {
+		t.Fatalf("unkeyed failures emitted correlation event: %+v", event)
+	}
+}
+
 func TestHandlerDoesNotCorrelateConfigurationFailures(t *testing.T) {
 	var event *CorrelationEvent
 	h := Handler{
 		Correlation:   NewCorrelationTracker(time.Minute, 2, time.Now),
 		OnCorrelation: func(got CorrelationEvent) { event = &got },
-		Resolve:       func(string, string) (*pms.Client, error) { return nil, errors.New("bad local configuration") },
+		Resolve: func(string, string) (ResolvedTarget, error) {
+			return ResolvedTarget{}, errors.New("bad local configuration")
+		},
 	}
 	for _, path := range []string{"/plex/account/one", "/plex/account/two"} {
 		r := httptest.NewRecorder()
@@ -116,8 +169,8 @@ func TestHandlerDoesNotCorrelateConfigurationFailures(t *testing.T) {
 
 func TestHandlerDoesNotExposeResolverErrorDetail(t *testing.T) {
 	secret := "https://private.example/?token=secret"
-	h := Handler{Resolve: func(string, string) (*pms.Client, error) {
-		return nil, errors.New(secret)
+	h := Handler{Resolve: func(string, string) (ResolvedTarget, error) {
+		return ResolvedTarget{}, errors.New(secret)
 	}}
 	r := httptest.NewRecorder()
 	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/plex/account/server", nil))
@@ -143,8 +196,8 @@ func TestHandlerDoesNotExposeResolverErrorDetail(t *testing.T) {
 }
 
 func TestHandlerMapsDiscoveryFailureTo503(t *testing.T) {
-	h := Handler{Resolve: func(string, string) (*pms.Client, error) {
-		return nil, ErrDiscoveryUnavailable
+	h := Handler{Resolve: func(string, string) (ResolvedTarget, error) {
+		return ResolvedTarget{}, ErrDiscoveryUnavailable
 	}}
 	r := httptest.NewRecorder()
 	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/plex/account/server", nil))
@@ -164,7 +217,7 @@ func TestHandlerMapsHealthFailureTo503AndDoesNotLeakToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := Handler{Timeout: time.Second, Resolve: func(string, string) (*pms.Client, error) { return pms.New(a), nil }}
+	h := Handler{Timeout: time.Second, Resolve: func(string, string) (ResolvedTarget, error) { return ResolvedTarget{Client: pms.New(a)}, nil }}
 	r := httptest.NewRecorder()
 	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/plex/a/b", nil))
 	if r.Code != http.StatusServiceUnavailable {

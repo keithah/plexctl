@@ -12,8 +12,19 @@ import (
 	"github.com/keithah/plexctl/internal/pms"
 )
 
-// Resolver returns the PMS client for an account/server monitor target.
-type Resolver func(account, server string) (*pms.Client, error)
+// ResolvedTarget is the monitor resolver's internal result. CorrelationKey is
+// a stable configured-target key used only for aggregate correlation; it is
+// never sent to a monitor client or emitted in logs. An empty key disables
+// correlation rather than falling back to the raw request selector.
+type ResolvedTarget struct {
+	Client         *pms.Client
+	CorrelationKey string
+}
+
+// Resolver returns the PMS client and canonical internal target identity for an
+// account/server monitor selector. Aliases for one configured profile must use
+// the same CorrelationKey.
+type Resolver func(account, server string) (ResolvedTarget, error)
 
 // ErrDiscoveryUnavailable marks an otherwise valid monitor target whose Plex
 // discovery data or advertised endpoints are temporarily unavailable.
@@ -27,8 +38,8 @@ type Handler struct {
 	OnCorrelation func(CorrelationEvent)
 }
 
-func (h Handler) reportFailure(account, server string) {
-	if event := h.Correlation.ObserveFailure(account + "\x00" + server); event != nil && h.OnCorrelation != nil {
+func (h Handler) reportFailure(target ResolvedTarget) {
+	if event := h.Correlation.ObserveFailure(target.CorrelationKey); event != nil && h.OnCorrelation != nil {
 		h.OnCorrelation(*event)
 	}
 }
@@ -51,16 +62,17 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "configuration", "configuration")
 		return
 	}
-	client, err := h.Resolve(account, server)
+	target, err := h.Resolve(account, server)
 	if err != nil {
 		if errors.Is(err, ErrDiscoveryUnavailable) {
-			h.reportFailure(account, server)
+			h.reportFailure(target)
 			writeError(w, http.StatusServiceUnavailable, "discovery", "discovery")
 			return
 		}
 		writeError(w, http.StatusNotFound, "configuration", "configuration")
 		return
 	}
+	client := target.Client
 	if client == nil {
 		writeError(w, http.StatusInternalServerError, "configuration", "configuration")
 		return
@@ -74,7 +86,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	result := health.Check(ctx, client)
 	status := http.StatusOK
 	if !result.OK {
-		h.reportFailure(account, server)
+		h.reportFailure(target)
 		status = http.StatusServiceUnavailable
 	}
 	w.WriteHeader(status)

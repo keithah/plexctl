@@ -6,8 +6,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/keithah/plexctl/internal/pms"
 )
 
 func TestHandlerDoesNotDoubleDecode(t *testing.T) {
@@ -22,9 +20,9 @@ func TestHandlerDoesNotDoubleDecode(t *testing.T) {
 	}
 	for _, tc := range cases {
 		var gotAccount, gotServer string
-		h := Handler{Resolve: func(a, s string) (*pms.Client, error) {
+		h := Handler{Resolve: func(a, s string) (ResolvedTarget, error) {
 			gotAccount, gotServer = a, s
-			return nil, errSentinel
+			return ResolvedTarget{}, errSentinel
 		}}
 		r := httptest.NewRecorder()
 		h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, tc.path, nil))
@@ -45,7 +43,7 @@ type errString string
 func (e errString) Error() string { return string(e) }
 
 func TestHandlerReturns500OnNilClientWithoutPanic(t *testing.T) {
-	h := Handler{Resolve: func(string, string) (*pms.Client, error) { return nil, nil }}
+	h := Handler{Resolve: func(string, string) (ResolvedTarget, error) { return ResolvedTarget{}, nil }}
 	r := httptest.NewRecorder()
 	// Should not panic
 	defer func() {
