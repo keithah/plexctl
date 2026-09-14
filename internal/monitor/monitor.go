@@ -50,7 +50,9 @@ func (e ResolutionEvent) String() string {
 	}
 }
 
-// Handler exposes the stable HTTP contract used by external monitors.
+// Handler exposes the stable HTTP contract used by external monitors. It owns
+// shared resolver state and must be used through a pointer; do not copy it after
+// first use.
 type Handler struct {
 	Resolve Resolver
 	Timeout time.Duration
@@ -78,9 +80,14 @@ type resolveCall struct {
 	result resolveResult
 }
 
+type resolveKey struct {
+	account string
+	server  string
+}
+
 type resolveState struct {
 	mu      sync.Mutex
-	calls   map[string]*resolveCall
+	calls   map[resolveKey]*resolveCall
 	workers chan struct{}
 }
 
@@ -106,7 +113,7 @@ func (h *Handler) resolve(ctx context.Context, account, server string) (Resolved
 	}
 
 	state := h.resolutionState()
-	key := account + "\x00" + server
+	key := resolveKey{account: account, server: server}
 	state.mu.Lock()
 	call := state.calls[key]
 	if call == nil {
@@ -136,7 +143,7 @@ func (h *Handler) resolutionState() *resolveState {
 	defer h.stateMu.Unlock()
 	if h.state == nil {
 		h.state = &resolveState{
-			calls:   make(map[string]*resolveCall),
+			calls:   make(map[resolveKey]*resolveCall),
 			workers: make(chan struct{}, maxStuckResolvers),
 		}
 	}
@@ -162,7 +169,7 @@ func contextTerminalError(ctx context.Context) error {
 	return nil
 }
 
-func (h *Handler) runResolution(state *resolveState, key string, call *resolveCall, ctx context.Context, account, server string) {
+func (h *Handler) runResolution(state *resolveState, key resolveKey, call *resolveCall, ctx context.Context, account, server string) {
 	target, err := h.Resolve(ctx, account, server)
 	call.cancel()
 

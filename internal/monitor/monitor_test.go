@@ -221,6 +221,95 @@ func TestHandlerDoesNotCancelSharedResolutionWhenInitiatorCancels(t *testing.T) 
 	}
 }
 
+func TestHandlerDoesNotCoalesceDistinctNULSelectors(t *testing.T) {
+	type selector struct {
+		account string
+		server  string
+	}
+
+	started := make(chan selector, 2)
+	release := make(chan struct{})
+	done := make(chan *httptest.ResponseRecorder, 2)
+	released := false
+	releaseResolvers := func() {
+		if !released {
+			close(release)
+			released = true
+		}
+	}
+	defer releaseResolvers()
+
+	h := Handler{
+		Timeout: time.Second,
+		Resolve: func(ctx context.Context, account, server string) (ResolvedTarget, error) {
+			started <- selector{account: account, server: server}
+			select {
+			case <-release:
+				return ResolvedTarget{}, ErrDiscoveryUnavailable
+			case <-ctx.Done():
+				return ResolvedTarget{}, ctx.Err()
+			}
+		},
+	}
+	paths := []string{
+		"/plex/a/b%00c",
+		"/plex/a%00b/c",
+	}
+	for _, path := range paths {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		if !contains(request.URL.Path, "\x00") {
+			t.Fatalf("path %q did not decode its NUL selector", path)
+		}
+		go func(request *http.Request) {
+			r := httptest.NewRecorder()
+			h.ServeHTTP(r, request)
+			done <- r
+		}(request)
+	}
+
+	seen := make(map[selector]struct{}, 2)
+	for range paths {
+		select {
+		case got := <-started:
+			seen[got] = struct{}{}
+		case <-time.After(100 * time.Millisecond):
+			releaseResolvers()
+			for range paths {
+				select {
+				case <-done:
+				case <-time.After(time.Second):
+					t.Fatal("coalesced resolver did not finish after release")
+				}
+			}
+			t.Fatalf("resolver calls=%d, want distinct calls for NUL selectors", len(seen))
+		}
+	}
+	want := map[selector]struct{}{
+		{account: "a", server: "b\x00c"}: {},
+		{account: "a\x00b", server: "c"}: {},
+	}
+	if len(seen) != len(want) {
+		t.Fatalf("resolver selectors=%v, want %v", seen, want)
+	}
+	for expected := range want {
+		if _, ok := seen[expected]; !ok {
+			t.Fatalf("resolver selectors=%v, missing %q/%q", seen, expected.account, expected.server)
+		}
+	}
+
+	releaseResolvers()
+	for range paths {
+		select {
+		case r := <-done:
+			if r.Code != http.StatusServiceUnavailable || !contains(r.Body.String(), `"classification":"discovery"`) {
+				t.Fatalf("status=%d body=%s, want discovery failure", r.Code, r.Body)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("resolver request did not finish after release")
+		}
+	}
+}
+
 func TestHandlerCapsStuckResolvers(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
