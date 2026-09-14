@@ -95,6 +95,13 @@ const maxStuckResolvers = 16
 
 var errResolverCapacity = errors.New("monitor resolver capacity exhausted")
 
+func isResolutionUnavailable(err error) bool {
+	return errors.Is(err, ErrDiscoveryUnavailable) ||
+		errors.Is(err, errResolverCapacity) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, context.Canceled)
+}
+
 func (h *Handler) reportFailure(target ResolvedTarget) {
 	if event := h.Correlation.ObserveFailure(target.CorrelationKey); event != nil && h.OnCorrelation != nil {
 		h.OnCorrelation(*event)
@@ -125,7 +132,7 @@ func (h *Handler) resolve(ctx context.Context, account, server string) (Resolved
 			go h.runResolution(state, key, call, resolveCtx, account, server)
 		default:
 			state.mu.Unlock()
-			return ResolvedTarget{}, fmt.Errorf("%w: %w", ErrDiscoveryUnavailable, errResolverCapacity)
+			return ResolvedTarget{}, errResolverCapacity
 		}
 	}
 	state.mu.Unlock()
@@ -254,7 +261,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		if errors.Is(err, ErrDiscoveryUnavailable) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		if isResolutionUnavailable(err) {
 			h.reportFailure(target)
 			writeError(w, http.StatusServiceUnavailable, "discovery", "discovery")
 			return

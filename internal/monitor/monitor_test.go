@@ -317,12 +317,16 @@ func TestHandlerCapsStuckResolvers(t *testing.T) {
 	started := make(chan struct{}, maxStuckResolvers)
 	release := make(chan struct{})
 	results := make(chan error, maxStuckResolvers)
+	var events []ResolutionEvent
 	h := Handler{
+		Timeout:      time.Second,
+		ResolveRetry: 1,
 		Resolve: func(context.Context, string, string) (ResolvedTarget, error) {
 			started <- struct{}{}
 			<-release
 			return ResolvedTarget{}, ErrDiscoveryUnavailable
 		},
+		OnResolution: func(event ResolutionEvent) { events = append(events, event) },
 	}
 	for i := 0; i < maxStuckResolvers; i++ {
 		go func(i int) {
@@ -338,9 +342,13 @@ func TestHandlerCapsStuckResolvers(t *testing.T) {
 		}
 	}
 
-	_, err := h.resolve(ctx, "account", "capacity-overflow")
-	if !errors.Is(err, ErrDiscoveryUnavailable) || !errors.Is(err, errResolverCapacity) {
-		t.Fatalf("capacity err=%v, want discovery-wrapped resolver capacity error", err)
+	r := httptest.NewRecorder()
+	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/plex/account/capacity-overflow", nil))
+	if r.Code != http.StatusServiceUnavailable || !contains(r.Body.String(), `"classification":"discovery"`) {
+		t.Fatalf("capacity status=%d body=%s, want safe discovery 503", r.Code, r.Body)
+	}
+	if len(events) != 0 {
+		t.Fatalf("capacity events=%+v, want no retry", events)
 	}
 
 	close(release)
