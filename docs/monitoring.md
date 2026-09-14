@@ -55,20 +55,27 @@ The handler should:
 4. On cache and profile validation failure, discover current Plex.tv candidates,
    validate them under the monitor deadline, and atomically replace the cache
    only after one matches.
-5. Run the bounded deep health check.
-6. Return a small privacy-preserving JSON response containing only `ok`,
+5. If an otherwise valid target has a classified transient discovery failure
+   before that deadline, wait one second and retry the complete resolution
+   exactly once under the same request deadline, only if that deadline remains
+   active. Do not retry configuration failures, cancellation, or an expired
+   deadline.
+6. Run the bounded deep health check.
+7. Return a small privacy-preserving JSON response containing only `ok`,
    `stage`, `classification`, and (for completed health checks) `duration_ms`.
    The account and server path selectors, URLs, tokens, media names, request or
    response bodies, and upstream error detail must never be echoed.
-7. Return HTTP 200 only for a healthy result. Return HTTP 503 for an unhealthy
+8. Return HTTP 200 only for a healthy result. Return HTTP 503 for an unhealthy
    result, with a safe stage/classification pair retained in the body for
    diagnosis.
 
 The adapter should bind to loopback or a private interface by default. Its
 responses and logs must not expose account or server identifiers, Plex tokens,
 credential values, authenticated URLs, media names, request/response bodies, or
-upstream error detail. A reverse proxy can publish it to Kuma if Kuma cannot
-reach the private bind address directly.
+upstream error detail. Resolution retry observability is limited to a stable
+outcome and attempt number; it never includes the failed selector or error. A
+reverse proxy can publish it to Kuma if Kuma cannot reach the private bind
+address directly.
 
 Example healthy response shape (illustrative; the exact schema is versioned
 in the adapter tests):

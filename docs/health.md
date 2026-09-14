@@ -30,3 +30,10 @@ cache only after validation. The cache is an availability optimization, not
 blind URL fallback: if the cached endpoint, profile candidate, and fresh
 discovery cannot validate the expected machine identifier, the monitor returns
 an unhealthy result.
+
+Adapter resolution shares the request's deadline with cache probes and Plex.tv
+discovery. A classified transient discovery failure can make one additional
+resolution attempt after a one-second delay only while that deadline remains
+active. Configuration failures, cancellation, and expired requests never retry.
+Retry logs contain only a stable outcome and attempt number, never a selected
+account/server, endpoint, credential, or raw upstream error.

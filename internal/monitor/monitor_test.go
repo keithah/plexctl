@@ -1,10 +1,13 @@
 package monitor
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -36,7 +39,7 @@ func TestHandlerHealthyAndUnhealthy(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := pms.New(a)
-	h := Handler{Timeout: time.Second, Resolve: func(account, server string) (ResolvedTarget, error) {
+	h := Handler{Timeout: time.Second, Resolve: func(_ context.Context, account, server string) (ResolvedTarget, error) {
 		if account != "keith" || server != "SF2" {
 			t.Fatalf("unexpected target %s/%s", account, server)
 		}
@@ -71,6 +74,221 @@ func TestHandlerHealthyAndUnhealthy(t *testing.T) {
 	}
 }
 
+func TestHandlerTimeoutBoundsResolution(t *testing.T) {
+	resolutionStarted := make(chan struct{})
+	h := Handler{
+		Timeout: 20 * time.Millisecond,
+		Resolve: func(ctx context.Context, _ string, _ string) (ResolvedTarget, error) {
+			close(resolutionStarted)
+			select {
+			case <-ctx.Done():
+				return ResolvedTarget{}, ctx.Err()
+			case <-time.After(200 * time.Millisecond):
+				return ResolvedTarget{}, errors.New("resolver did not receive handler deadline")
+			}
+		},
+	}
+	r := httptest.NewRecorder()
+	startedAt := time.Now()
+	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/plex/account/server", nil))
+	if elapsed := time.Since(startedAt); elapsed > time.Second {
+		t.Fatalf("handler returned after %s, want resolver bounded by handler timeout", elapsed)
+	}
+	select {
+	case <-resolutionStarted:
+	default:
+		t.Fatal("handler did not invoke resolver")
+	}
+	if r.Code != http.StatusServiceUnavailable || !contains(r.Body.String(), `"classification":"discovery"`) {
+		t.Fatalf("status=%d body=%s, want bounded resolution 503 discovery", r.Code, r.Body)
+	}
+}
+
+func TestHandlerReturnsAtDeadlineWhenResolverIgnoresContext(t *testing.T) {
+	const timeout = 20 * time.Millisecond
+	const resolverBlock = 250 * time.Millisecond
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	h := Handler{
+		Timeout: timeout,
+		Resolve: func(context.Context, string, string) (ResolvedTarget, error) {
+			close(started)
+			<-release
+			close(finished)
+			return ResolvedTarget{}, ErrDiscoveryUnavailable
+		},
+	}
+	go func() {
+		<-started
+		time.Sleep(resolverBlock)
+		close(release)
+	}()
+
+	r := httptest.NewRecorder()
+	startedAt := time.Now()
+	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/plex/account/server", nil))
+	if elapsed := time.Since(startedAt); elapsed > resolverBlock/2 {
+		t.Fatalf("handler waited for uncooperative resolver: %s", elapsed)
+	}
+	if r.Code != http.StatusServiceUnavailable || !contains(r.Body.String(), `"classification":"discovery"`) {
+		t.Fatalf("status=%d body=%s, want deadline-bounded discovery failure", r.Code, r.Body)
+	}
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("uncooperative resolver did not finish after release")
+	}
+}
+
+func TestHandlerDoesNotStartResolutionForCanceledRequest(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var attempts atomic.Int32
+	h := Handler{
+		ResolveRetry: 1,
+		Resolve: func(context.Context, string, string) (ResolvedTarget, error) {
+			attempts.Add(1)
+			return ResolvedTarget{}, ErrDiscoveryUnavailable
+		},
+	}
+	r := httptest.NewRecorder()
+	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/plex/account/server", nil).WithContext(ctx))
+	if r.Code != http.StatusServiceUnavailable || !contains(r.Body.String(), `"classification":"discovery"`) {
+		t.Fatalf("status=%d body=%s, want canceled discovery failure", r.Code, r.Body)
+	}
+	if got := attempts.Load(); got != 0 {
+		t.Fatalf("resolve attempts=%d, want none for canceled request", got)
+	}
+}
+
+func TestHandlerDoesNotCancelSharedResolutionWhenInitiatorCancels(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	secondStarted := make(chan struct{})
+	var attempts atomic.Int32
+	h := Handler{
+		Timeout: time.Second,
+		Resolve: func(ctx context.Context, _ string, _ string) (ResolvedTarget, error) {
+			if attempts.Add(1) == 1 {
+				close(started)
+			} else {
+				close(secondStarted)
+			}
+			select {
+			case <-release:
+				return ResolvedTarget{}, ErrDiscoveryUnavailable
+			case <-ctx.Done():
+				return ResolvedTarget{}, ctx.Err()
+			}
+		},
+	}
+
+	initiatorCtx, cancelInitiator := context.WithCancel(context.Background())
+	defer cancelInitiator()
+	initiatorDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		r := httptest.NewRecorder()
+		h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/plex/account/server", nil).WithContext(initiatorCtx))
+		initiatorDone <- r
+	}()
+	<-started
+	cancelInitiator()
+	if r := <-initiatorDone; r.Code != http.StatusServiceUnavailable {
+		t.Fatalf("initiator status=%d body=%s, want canceled discovery failure", r.Code, r.Body)
+	}
+
+	waiterDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		r := httptest.NewRecorder()
+		h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/plex/account/server", nil))
+		waiterDone <- r
+	}()
+	select {
+	case <-secondStarted:
+		t.Fatal("initiator cancellation started a duplicate resolver")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	if r := <-waiterDone; r.Code != http.StatusServiceUnavailable || !contains(r.Body.String(), `"classification":"discovery"`) {
+		t.Fatalf("waiter status=%d body=%s, want shared discovery result", r.Code, r.Body)
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("resolve attempts=%d, want one shared resolver", got)
+	}
+}
+
+func TestHandlerCapsStuckResolvers(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	started := make(chan struct{}, maxStuckResolvers)
+	release := make(chan struct{})
+	results := make(chan error, maxStuckResolvers)
+	h := Handler{
+		Resolve: func(context.Context, string, string) (ResolvedTarget, error) {
+			started <- struct{}{}
+			<-release
+			return ResolvedTarget{}, ErrDiscoveryUnavailable
+		},
+	}
+	for i := 0; i < maxStuckResolvers; i++ {
+		go func(i int) {
+			_, err := h.resolve(ctx, "account", fmt.Sprintf("server-%d", i))
+			results <- err
+		}(i)
+	}
+	for i := 0; i < maxStuckResolvers; i++ {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("expected resolver did not start")
+		}
+	}
+
+	_, err := h.resolve(ctx, "account", "capacity-overflow")
+	if !errors.Is(err, ErrDiscoveryUnavailable) || !errors.Is(err, errResolverCapacity) {
+		t.Fatalf("capacity err=%v, want discovery-wrapped resolver capacity error", err)
+	}
+
+	close(release)
+	for i := 0; i < maxStuckResolvers; i++ {
+		select {
+		case err := <-results:
+			if !errors.Is(err, ErrDiscoveryUnavailable) {
+				t.Fatalf("released resolver err=%v, want discovery failure", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("stuck resolver did not finish after release")
+		}
+	}
+}
+
+func TestHandlerTreatsExpiredResolutionAsDiscoveryFailure(t *testing.T) {
+	a, err := api.New("http://127.0.0.1", "tok", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := Handler{
+		Timeout: 20 * time.Millisecond,
+		Resolve: func(ctx context.Context, _ string, _ string) (ResolvedTarget, error) {
+			<-ctx.Done()
+			// A resolver that finishes concurrently with expiry can return its
+			// target after the shared monitor deadline. That is still resolution
+			// failure, not a PMS health failure.
+			return ResolvedTarget{Client: pms.New(a)}, nil
+		},
+	}
+	r := httptest.NewRecorder()
+	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/plex/account/server", nil))
+	if r.Code != http.StatusServiceUnavailable || !contains(r.Body.String(), `"classification":"discovery"`) || !contains(r.Body.String(), `"stage":"discovery"`) {
+		t.Fatalf("status=%d body=%s, want expired resolution 503 discovery", r.Code, r.Body)
+	}
+}
+
 func TestHandlerReportsCorrelationWithoutChangingFailureStatus(t *testing.T) {
 	var event *CorrelationEvent
 	tracker := NewCorrelationTracker(time.Minute, 2, time.Now)
@@ -79,7 +297,7 @@ func TestHandlerReportsCorrelationWithoutChangingFailureStatus(t *testing.T) {
 		OnCorrelation: func(got CorrelationEvent) {
 			event = &got
 		},
-		Resolve: func(_ string, server string) (ResolvedTarget, error) {
+		Resolve: func(_ context.Context, _ string, server string) (ResolvedTarget, error) {
 			return ResolvedTarget{CorrelationKey: server}, ErrDiscoveryUnavailable
 		},
 	}
@@ -100,7 +318,7 @@ func TestHandlerDoesNotOvercountAliasTargetsForCorrelation(t *testing.T) {
 	h := Handler{
 		Correlation:   NewCorrelationTracker(time.Minute, 2, time.Now),
 		OnCorrelation: func(got CorrelationEvent) { event = &got },
-		Resolve: func(_ string, server string) (ResolvedTarget, error) {
+		Resolve: func(_ context.Context, _ string, server string) (ResolvedTarget, error) {
 			key := "profile-alpha"
 			if server == "Beta" {
 				key = "profile-beta"
@@ -130,7 +348,7 @@ func TestHandlerDoesNotCorrelateUnkeyedDiscoveryFailures(t *testing.T) {
 	h := Handler{
 		Correlation:   NewCorrelationTracker(time.Minute, 2, time.Now),
 		OnCorrelation: func(got CorrelationEvent) { event = &got },
-		Resolve: func(string, string) (ResolvedTarget, error) {
+		Resolve: func(context.Context, string, string) (ResolvedTarget, error) {
 			return ResolvedTarget{}, ErrDiscoveryUnavailable
 		},
 	}
@@ -151,7 +369,7 @@ func TestHandlerDoesNotCorrelateConfigurationFailures(t *testing.T) {
 	h := Handler{
 		Correlation:   NewCorrelationTracker(time.Minute, 2, time.Now),
 		OnCorrelation: func(got CorrelationEvent) { event = &got },
-		Resolve: func(string, string) (ResolvedTarget, error) {
+		Resolve: func(context.Context, string, string) (ResolvedTarget, error) {
 			return ResolvedTarget{}, errors.New("bad local configuration")
 		},
 	}
@@ -169,7 +387,7 @@ func TestHandlerDoesNotCorrelateConfigurationFailures(t *testing.T) {
 
 func TestHandlerDoesNotExposeResolverErrorDetail(t *testing.T) {
 	secret := "https://private.example/?token=secret"
-	h := Handler{Resolve: func(string, string) (ResolvedTarget, error) {
+	h := Handler{Resolve: func(context.Context, string, string) (ResolvedTarget, error) {
 		return ResolvedTarget{}, errors.New(secret)
 	}}
 	r := httptest.NewRecorder()
@@ -196,7 +414,7 @@ func TestHandlerDoesNotExposeResolverErrorDetail(t *testing.T) {
 }
 
 func TestHandlerMapsDiscoveryFailureTo503(t *testing.T) {
-	h := Handler{Resolve: func(string, string) (ResolvedTarget, error) {
+	h := Handler{Resolve: func(context.Context, string, string) (ResolvedTarget, error) {
 		return ResolvedTarget{}, ErrDiscoveryUnavailable
 	}}
 	r := httptest.NewRecorder()
@@ -217,7 +435,9 @@ func TestHandlerMapsHealthFailureTo503AndDoesNotLeakToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := Handler{Timeout: time.Second, Resolve: func(string, string) (ResolvedTarget, error) { return ResolvedTarget{Client: pms.New(a)}, nil }}
+	h := Handler{Timeout: time.Second, Resolve: func(context.Context, string, string) (ResolvedTarget, error) {
+		return ResolvedTarget{Client: pms.New(a)}, nil
+	}}
 	r := httptest.NewRecorder()
 	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/plex/a/b", nil))
 	if r.Code != http.StatusServiceUnavailable {

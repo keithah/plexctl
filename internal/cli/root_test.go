@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/keithah/plexctl/internal/config"
 	"github.com/keithah/plexctl/internal/connectioncache"
@@ -27,6 +28,13 @@ func run(t *testing.T, args ...string) (string, error) {
 	root.SetArgs(args)
 	err := root.Execute()
 	return buf.String(), err
+}
+
+func TestServeHandlerEnablesBoundedResolutionRetry(t *testing.T) {
+	h := newServeMonitorHandler(&options{}, nil, nil)
+	if h.ResolveRetry != 1 || h.RetryDelay != time.Second || h.OnResolution == nil || h.Resolve == nil {
+		t.Fatalf("handler does not enable one delayed resolution retry")
+	}
 }
 
 func TestCommandTreeIsRegistered(t *testing.T) {

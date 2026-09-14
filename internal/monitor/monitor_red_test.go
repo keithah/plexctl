@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -20,7 +21,7 @@ func TestHandlerDoesNotDoubleDecode(t *testing.T) {
 	}
 	for _, tc := range cases {
 		var gotAccount, gotServer string
-		h := Handler{Resolve: func(a, s string) (ResolvedTarget, error) {
+		h := Handler{Resolve: func(_ context.Context, a, s string) (ResolvedTarget, error) {
 			gotAccount, gotServer = a, s
 			return ResolvedTarget{}, errSentinel
 		}}
@@ -43,7 +44,7 @@ type errString string
 func (e errString) Error() string { return string(e) }
 
 func TestHandlerReturns500OnNilClientWithoutPanic(t *testing.T) {
-	h := Handler{Resolve: func(string, string) (ResolvedTarget, error) { return ResolvedTarget{}, nil }}
+	h := Handler{Resolve: func(context.Context, string, string) (ResolvedTarget, error) { return ResolvedTarget{}, nil }}
 	r := httptest.NewRecorder()
 	// Should not panic
 	defer func() {
