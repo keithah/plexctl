@@ -1407,7 +1407,7 @@ func validateHistoryReport(mode, olderThan, output string) error {
 func historyReportViews(metadata []pms.Metadata) []historyreport.View {
 	source := make([]historyreport.SourceView, 0, len(metadata))
 	for _, item := range metadata {
-		value := historyreport.SourceView{RatingKey: item.RatingKey, Title: item.Title, ParentTitle: item.ParentTitle, GrandparentTitle: item.GrandparentTitle, MediaType: item.Type, SectionID: item.LibrarySectionID, SectionTitle: item.LibrarySectionTitle, AccountTitle: item.AccountTitle}
+		value := historyreport.SourceView{RatingKey: item.RatingKey, Title: item.Title, ParentTitle: item.ParentTitle, GrandparentTitle: item.GrandparentTitle, MediaType: item.Type, SectionID: string(item.LibrarySectionID), SectionTitle: item.LibrarySectionTitle, AccountTitle: item.AccountTitle}
 		if item.AccountID != 0 {
 			value.AccountID = strconv.FormatInt(item.AccountID, 10)
 		}
