@@ -1,6 +1,10 @@
 package pms
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+)
 
 type SearchContainer struct {
 	MediaContainer struct {
@@ -154,28 +158,91 @@ func (m *metadataMediaContainer) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// LibrarySectionID preserves Plex section IDs as text while accepting the
+// string and unsigned-integer encodings returned by different PMS endpoints.
+// It avoids float conversion, so large numeric IDs remain exact.
+type LibrarySectionID string
+
+func (id *LibrarySectionID) UnmarshalJSON(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return err
+	}
+	switch value := value.(type) {
+	case nil:
+		*id = ""
+	case string:
+		*id = LibrarySectionID(value)
+	case json.Number:
+		if !isUnsignedDecimal(value.String()) {
+			return fmt.Errorf("library section ID must be a string or unsigned integer")
+		}
+		*id = LibrarySectionID(value.String())
+	default:
+		return fmt.Errorf("library section ID must be a string or unsigned integer")
+	}
+	return nil
+}
+
+func isUnsignedDecimal(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 type Metadata struct {
-	RatingKey           string  `json:"ratingKey"`
-	Key                 string  `json:"key"`
-	Type                string  `json:"type"`
-	Title               string  `json:"title"`
-	Thumb               string  `json:"thumb"`
-	GUID                []GUID  `json:"Guid"`
-	GrandparentTitle    string  `json:"grandparentTitle"`
-	ParentTitle         string  `json:"parentTitle"`
-	Year                int     `json:"year"`
-	Duration            *int64  `json:"duration"`
-	ViewedAt            *int64  `json:"viewedAt"`
-	LibrarySectionID    string  `json:"librarySectionID"`
-	LibrarySectionTitle string  `json:"librarySectionTitle"`
-	AccountID           int64   `json:"accountID"`
-	AccountTitle        string  `json:"accountTitle"`
-	ViewOffset          int64   `json:"viewOffset"`
-	Media               []Media `json:"Media"`
+	RatingKey           string           `json:"ratingKey"`
+	Key                 string           `json:"key"`
+	Type                string           `json:"type"`
+	Title               string           `json:"title"`
+	Thumb               string           `json:"thumb"`
+	GUID                GUIDs            `json:"Guid"`
+	GrandparentTitle    string           `json:"grandparentTitle"`
+	ParentTitle         string           `json:"parentTitle"`
+	Year                int              `json:"year"`
+	Duration            *int64           `json:"duration"`
+	ViewedAt            *int64           `json:"viewedAt"`
+	LibrarySectionID    LibrarySectionID `json:"librarySectionID"`
+	LibrarySectionTitle string           `json:"librarySectionTitle"`
+	AccountID           int64            `json:"accountID"`
+	AccountTitle        string           `json:"accountTitle"`
+	ViewOffset          int64            `json:"viewOffset"`
+	Media               []Media          `json:"Media"`
 }
 type GUID struct {
 	ID string `json:"id"`
 }
+
+// GUIDs accepts the array form used by library-maintenance responses and the
+// singleton string form returned by some PMS library listings.
+type GUIDs []GUID
+
+func (guids *GUIDs) UnmarshalJSON(data []byte) error {
+	var values []GUID
+	if err := json.Unmarshal(data, &values); err == nil {
+		*guids = GUIDs(values)
+		return nil
+	}
+	var value string
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	if value == "" {
+		*guids = nil
+		return nil
+	}
+	*guids = GUIDs{{ID: value}}
+	return nil
+}
+
 type Media struct {
 	Part []Part `json:"Part"`
 }

@@ -38,6 +38,38 @@ func TestHistoryReportMetadataDecoding(t *testing.T) {
 	}
 }
 
+func TestMetadataDecodesNumericLibrarySectionID(t *testing.T) {
+	c, _, done := recorder(t, `{"MediaContainer":{"size":1,"Metadata":[{"key":"/library/metadata/42","librarySectionID":7}]}}`)
+	defer done()
+
+	metadata, err := c.Metadata(context.Background(), "42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metadata.MediaContainer.Metadata) != 1 {
+		t.Fatalf("metadata item count = %d, want 1", len(metadata.MediaContainer.Metadata))
+	}
+	if got := metadata.MediaContainer.Metadata[0].LibrarySectionID; got != "7" {
+		t.Fatalf("library section ID = %q, want 7", got)
+	}
+}
+
+func TestMetadataDecodesStringGUID(t *testing.T) {
+	c, _, done := recorder(t, `{"MediaContainer":{"size":1,"Metadata":[{"key":"/library/metadata/42","Guid":"plex://movie/example"}]}}`)
+	defer done()
+
+	metadata, err := c.Metadata(context.Background(), "42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metadata.MediaContainer.Metadata) != 1 {
+		t.Fatalf("metadata item count = %d, want 1", len(metadata.MediaContainer.Metadata))
+	}
+	if got := metadata.MediaContainer.Metadata[0].GUID; len(got) != 1 || got[0].ID != "plex://movie/example" {
+		t.Fatalf("GUID = %+v, want one normalized string GUID", got)
+	}
+}
+
 func TestHistoryAllFetchesEveryPage(t *testing.T) {
 	var starts []string
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
