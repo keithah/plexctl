@@ -48,13 +48,16 @@ The handler should:
 3. Validate that server's durable, token-free cached endpoints against its stable
    machine identifier. A successful cache validation skips Plex.tv entirely. The
    adapter probes no more than three distinct cached or persisted-profile
-   endpoints before discovery: when a persisted profile URL exists, it is a
-   durable fallback unless it already matches a cached candidate. Within that
-   pre-discovery sequence, never probe the same URI twice or use any candidate
-   blindly.
-4. On cache and profile validation failure, discover current Plex.tv candidates,
-   validate them under the monitor deadline, and atomically replace the cache
-   only after one matches.
+   endpoints before discovery: for a profile with a machine identifier, a
+   persisted profile URL is a durable fallback unless it already matches a
+   cached candidate. Within that pre-discovery sequence, never probe the same
+   URI twice or use any candidate blindly.
+4. On cache and profile validation failure, discover current Plex.tv candidates
+   and atomically replace the cache only after one validates. Every HTTP request
+   waits under its own monitor deadline. Shared resolution work has a separate
+   30-second upper bound. When its last deadline-bound waiter expires, abandoned
+   work is canceled; a short or canceled leader cannot terminate discovery needed
+   by a healthy waiter.
 5. If an otherwise valid target has a classified transient discovery failure
    before that deadline, wait one second and retry the complete resolution
    exactly once under the same request deadline, only if that deadline remains

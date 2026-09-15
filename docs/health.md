@@ -20,20 +20,23 @@ cycle/depth-capped media probes).
 
 `serve` keeps a durable, token-free cache of **previously identity-validated**
 PMS connections. A healthy cached endpoint is used before contacting Plex.tv.
-When a persisted profile URL exists, it remains an identity-checked fallback
-within the three-distinct-endpoint pre-discovery probe budget unless it already
-matches a cached candidate; that pre-discovery sequence never spends two probes
-on the same URI. It is cached only after validation succeeds. Discovery is used
-only after
+For a profile with a stable machine identifier, a persisted profile URL remains
+an identity-checked fallback within the three-distinct-endpoint pre-discovery
+probe budget unless it already matches a cached candidate; that pre-discovery
+sequence never spends two probes on the same URI. It is cached only after
+validation succeeds. Discovery is used only after
 cache/profile validation fails, and a newly discovered endpoint replaces the
 cache only after validation. The cache is an availability optimization, not
 blind URL fallback: if the cached endpoint, profile candidate, and fresh
 discovery cannot validate the expected machine identifier, the monitor returns
 an unhealthy result.
 
-Adapter resolution shares the request's deadline with cache probes and Plex.tv
-discovery. A classified transient discovery failure can make one additional
-resolution attempt after a one-second delay only while that deadline remains
+Each adapter request waits under its own deadline for resolution and health
+checks. Shared resolver work has a separate 30-second upper bound. When its
+last deadline-bound waiter expires, abandoned work is canceled; a short or
+canceled leader cannot terminate discovery needed by a healthy waiter. A
+classified transient discovery failure can make one additional resolution
+attempt after a one-second delay only while that request deadline remains
 active. Configuration failures, cancellation, and expired requests never retry.
 Retry logs contain only a stable outcome and attempt number, never a selected
 account/server, endpoint, credential, or raw upstream error.

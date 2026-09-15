@@ -75,9 +75,10 @@ type resolveResult struct {
 }
 
 type resolveCall struct {
-	done   chan struct{}
-	cancel context.CancelFunc
-	result resolveResult
+	done    chan struct{}
+	cancel  context.CancelFunc
+	waiters int
+	result  resolveResult
 }
 
 type resolveKey struct {
@@ -91,7 +92,10 @@ type resolveState struct {
 	workers chan struct{}
 }
 
-const maxStuckResolvers = 16
+const (
+	maxStuckResolvers     = 16
+	resolutionWorkTimeout = 30 * time.Second
+)
 
 var errResolverCapacity = errors.New("monitor resolver capacity exhausted")
 
@@ -126,14 +130,16 @@ func (h *Handler) resolve(ctx context.Context, account, server string) (Resolved
 	if call == nil {
 		select {
 		case state.workers <- struct{}{}:
-			resolveCtx, cancel := h.resolutionContext(ctx)
-			call = &resolveCall{done: make(chan struct{}), cancel: cancel}
+			resolveCtx, cancel := h.resolutionContext()
+			call = &resolveCall{done: make(chan struct{}), cancel: cancel, waiters: 1}
 			state.calls[key] = call
 			go h.runResolution(state, key, call, resolveCtx, account, server)
 		default:
 			state.mu.Unlock()
 			return ResolvedTarget{}, errResolverCapacity
 		}
+	} else {
+		call.waiters++
 	}
 	state.mu.Unlock()
 
@@ -141,7 +147,24 @@ func (h *Handler) resolve(ctx context.Context, account, server string) (Resolved
 	case <-call.done:
 		return call.result.target, call.result.err
 	case <-ctx.Done():
+		h.releaseResolutionWaiter(state, key, call, ctx.Err())
 		return ResolvedTarget{}, ctx.Err()
+	}
+}
+
+func (h *Handler) releaseResolutionWaiter(state *resolveState, key resolveKey, call *resolveCall, cause error) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.calls[key] != call || call.waiters == 0 {
+		return
+	}
+	call.waiters--
+	// A deadline must terminate abandoned discovery. Explicit caller
+	// cancellation is detached so a later healthy waiter can still join the
+	// bounded shared worker.
+	if call.waiters == 0 && errors.Is(cause, context.DeadlineExceeded) {
+		delete(state.calls, key)
+		call.cancel()
 	}
 }
 
@@ -157,13 +180,12 @@ func (h *Handler) resolutionState() *resolveState {
 	return h.state
 }
 
-// resolutionContext preserves the handler's absolute deadline while deliberately
-// detaching a single caller's cancellation from shared resolver work.
-func (h *Handler) resolutionContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	if deadline, ok := ctx.Deadline(); ok {
-		return context.WithDeadline(context.Background(), deadline)
-	}
-	return context.WithCancel(context.Background())
+// resolutionContext bounds shared resolver work independently from any one
+// waiter. Every HTTP request still waits under its own deadline; the last
+// expired waiter cancels abandoned work, while a short or canceled leader
+// cannot terminate discovery needed by another healthy waiter.
+func (h *Handler) resolutionContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), resolutionWorkTimeout)
 }
 
 func contextTerminalError(ctx context.Context) error {
@@ -182,7 +204,9 @@ func (h *Handler) runResolution(state *resolveState, key resolveKey, call *resol
 
 	state.mu.Lock()
 	call.result = resolveResult{target: target, err: err}
-	delete(state.calls, key)
+	if state.calls[key] == call {
+		delete(state.calls, key)
+	}
 	close(call.done)
 	<-state.workers
 	state.mu.Unlock()

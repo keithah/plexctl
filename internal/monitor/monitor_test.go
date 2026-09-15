@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -218,6 +219,180 @@ func TestHandlerDoesNotCancelSharedResolutionWhenInitiatorCancels(t *testing.T) 
 	}
 	if got := attempts.Load(); got != 1 {
 		t.Fatalf("resolve attempts=%d, want one shared resolver", got)
+	}
+}
+
+func TestHandlerSharedResolutionDoesNotInheritLeaderDeadline(t *testing.T) {
+	leaderCtx, cancelLeader := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancelLeader()
+	waiterCtx, cancelWaiter := context.WithTimeout(context.Background(), time.Second)
+	defer cancelWaiter()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseResolver := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseResolver)
+	var calls atomic.Int32
+	h := Handler{
+		Resolve: func(ctx context.Context, _ string, _ string) (ResolvedTarget, error) {
+			if calls.Add(1) == 1 {
+				close(started)
+			}
+			<-release
+			if err := ctx.Err(); err != nil {
+				return ResolvedTarget{}, err
+			}
+			return ResolvedTarget{CorrelationKey: "profile-alpha"}, nil
+		},
+	}
+
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, err := h.resolve(leaderCtx, "account", "alpha")
+		leaderDone <- err
+	}()
+	<-started
+
+	// The second waiter joins before the leader's deadline, but its own deadline
+	// remains healthy after the leader expires.
+	waiterDone := make(chan resolveResult, 1)
+	go func() {
+		target, err := h.resolve(waiterCtx, "account", "alpha")
+		waiterDone <- resolveResult{target: target, err: err}
+	}()
+	waitForResolutionWaiters(t, &h, resolveKey{account: "account", server: "alpha"}, 2)
+	if err := <-leaderDone; !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("leader error=%v, want its own deadline", err)
+	}
+	releaseResolver()
+	result := <-waiterDone
+	if result.err != nil || result.target.CorrelationKey != "profile-alpha" {
+		t.Fatalf("waiter result=%+v, want healthy shared resolution", result)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("resolver calls=%d, want one shared resolver", got)
+	}
+}
+
+func waitForResolutionWaiters(t *testing.T, h *Handler, key resolveKey, want int) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	for {
+		state := h.resolutionState()
+		state.mu.Lock()
+		call := state.calls[key]
+		got := 0
+		if call != nil {
+			got = call.waiters
+		}
+		state.mu.Unlock()
+		if got >= want {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("resolver waiters=%d, want at least %d", got, want)
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
+func TestHandlerExpiredWorkerCannotDeleteReplacement(t *testing.T) {
+	firstCtx, cancelFirst := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancelFirst()
+	secondCtx, cancelSecond := context.WithTimeout(context.Background(), time.Second)
+	defer cancelSecond()
+	thirdCtx, cancelThird := context.WithTimeout(context.Background(), time.Second)
+	defer cancelThird()
+
+	firstStarted := make(chan struct{})
+	firstRelease := make(chan struct{})
+	firstReturned := make(chan struct{})
+	secondStarted := make(chan struct{})
+	secondRelease := make(chan struct{})
+	var releaseFirstOnce sync.Once
+	releaseFirst := func() { releaseFirstOnce.Do(func() { close(firstRelease) }) }
+	var releaseSecondOnce sync.Once
+	releaseSecond := func() { releaseSecondOnce.Do(func() { close(secondRelease) }) }
+	t.Cleanup(func() {
+		releaseFirst()
+		releaseSecond()
+	})
+	var calls atomic.Int32
+	h := Handler{Resolve: func(ctx context.Context, _ string, _ string) (ResolvedTarget, error) {
+		switch calls.Add(1) {
+		case 1:
+			close(firstStarted)
+			<-firstRelease
+			close(firstReturned)
+			return ResolvedTarget{}, ctx.Err()
+		case 2:
+			close(secondStarted)
+			<-secondRelease
+			return ResolvedTarget{CorrelationKey: "profile-alpha"}, nil
+		default:
+			return ResolvedTarget{}, errors.New("unexpected replacement resolver")
+		}
+	}}
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := h.resolve(firstCtx, "account", "alpha")
+		firstDone <- err
+	}()
+	<-firstStarted
+	if err := <-firstDone; !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("first error=%v, want deadline exceeded", err)
+	}
+
+	secondDone := make(chan resolveResult, 1)
+	go func() {
+		target, err := h.resolve(secondCtx, "account", "alpha")
+		secondDone <- resolveResult{target: target, err: err}
+	}()
+	<-secondStarted
+	releaseFirst()
+	<-firstReturned
+	waitForResolverWorkers(t, &h, 1)
+
+	thirdDone := make(chan resolveResult, 1)
+	go func() {
+		target, err := h.resolve(thirdCtx, "account", "alpha")
+		thirdDone <- resolveResult{target: target, err: err}
+	}()
+	select {
+	case <-time.After(50 * time.Millisecond):
+		if got := calls.Load(); got != 2 {
+			t.Fatalf("resolver calls=%d, want replacement worker to remain shared", got)
+		}
+	}
+	releaseSecond()
+	for range 2 {
+		var result resolveResult
+		select {
+		case result = <-secondDone:
+		case result = <-thirdDone:
+		}
+		if result.err != nil || result.target.CorrelationKey != "profile-alpha" {
+			t.Fatalf("replacement result=%+v, want shared target", result)
+		}
+	}
+}
+
+func waitForResolverWorkers(t *testing.T, h *Handler, want int) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	for {
+		state := h.resolutionState()
+		if got := len(state.workers); got == want {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("resolver workers=%d, want %d", len(state.workers), want)
+		case <-time.After(time.Millisecond):
+		}
 	}
 }
 

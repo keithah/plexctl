@@ -159,7 +159,8 @@ func TestHandlerDoesNotRetryTerminalDiscoveryFailure(t *testing.T) {
 
 func TestHandlerDoesNotRetryDiscoveryFailureAfterDeadline(t *testing.T) {
 	attempts := 0
-	finished := make(chan struct{})
+	started := make(chan struct{}, 1)
+	finished := make(chan struct{}, 1)
 	var events []ResolutionEvent
 	h := Handler{
 		Timeout:      20 * time.Millisecond,
@@ -170,13 +171,34 @@ func TestHandlerDoesNotRetryDiscoveryFailureAfterDeadline(t *testing.T) {
 		},
 		Resolve: func(ctx context.Context, _ string, _ string) (ResolvedTarget, error) {
 			attempts++
+			select {
+			case started <- struct{}{}:
+			default:
+			}
 			<-ctx.Done()
-			close(finished)
+			select {
+			case finished <- struct{}{}:
+			default:
+			}
 			return ResolvedTarget{CorrelationKey: "private-target"}, ErrDiscoveryUnavailable
 		},
 	}
 	r := httptest.NewRecorder()
-	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/plex/account/server", nil))
+	serveDone := make(chan struct{})
+	go func() {
+		h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/plex/account/server", nil))
+		close(serveDone)
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("resolver worker did not start")
+	}
+	select {
+	case <-serveDone:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not return after its deadline")
+	}
 	if r.Code != http.StatusServiceUnavailable || !contains(r.Body.String(), `"classification":"discovery"`) {
 		t.Fatalf("status=%d body=%s, want deadline-bounded discovery failure", r.Code, r.Body)
 	}
