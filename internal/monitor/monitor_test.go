@@ -103,43 +103,26 @@ func TestHandlerUsesRetryResolverForClassifiedDiscoveryFailure(t *testing.T) {
 	}
 }
 
-func TestHandlerRetryResolverDoesNotJoinNormalResolver(t *testing.T) {
-	firstReturned := make(chan struct{})
+func TestHandlerForceRetryResolverDoesNotJoinNormalResolver(t *testing.T) {
 	normalStarted := make(chan struct{})
 	releaseNormal := make(chan struct{})
 	retryStarted := make(chan struct{})
 	releaseRetry := make(chan struct{})
+	var releaseNormalOnce sync.Once
+	var releaseRetryOnce sync.Once
+	releaseNormalResolver := func() { releaseNormalOnce.Do(func() { close(releaseNormal) }) }
+	releaseRetryResolver := func() { releaseRetryOnce.Do(func() { close(releaseRetry) }) }
+	defer releaseNormalResolver()
+	defer releaseRetryResolver()
 	var normalCalls atomic.Int32
 	var retryCalls atomic.Int32
-	defer func() {
-		select {
-		case <-releaseRetry:
-		default:
-			close(releaseRetry)
-		}
-		select {
-		case <-releaseNormal:
-		default:
-			close(releaseNormal)
-		}
-	}()
 
 	h := Handler{
-		Timeout:      time.Second,
-		ResolveRetry: 1,
-		RetryDelay:   100 * time.Millisecond,
 		Resolve: func(context.Context, string, string) (ResolvedTarget, error) {
-			switch normalCalls.Add(1) {
-			case 1:
-				close(firstReturned)
-				return ResolvedTarget{CorrelationKey: "target"}, ErrDiscoveryUnavailable
-			case 2:
-				close(normalStarted)
-				<-releaseNormal
-				return ResolvedTarget{CorrelationKey: "target"}, ErrDiscoveryUnavailable
-			default:
-				return ResolvedTarget{CorrelationKey: "target"}, ErrDiscoveryUnavailable
-			}
+			normalCalls.Add(1)
+			close(normalStarted)
+			<-releaseNormal
+			return ResolvedTarget{CorrelationKey: "target"}, ErrDiscoveryUnavailable
 		},
 		RetryResolve: func(context.Context, string, string) (ResolvedTarget, error) {
 			retryCalls.Add(1)
@@ -149,39 +132,51 @@ func TestHandlerRetryResolverDoesNotJoinNormalResolver(t *testing.T) {
 		},
 	}
 
-	firstDone := make(chan *httptest.ResponseRecorder, 1)
+	normalDone := make(chan resolveResult, 1)
 	go func() {
-		r := httptest.NewRecorder()
-		h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/plex/account/server", nil))
-		firstDone <- r
+		target, err := h.resolve(context.Background(), "account", "server")
+		normalDone <- resolveResult{target: target, err: err}
 	}()
-	<-firstReturned
-
-	normalCtx, cancelNormal := context.WithCancel(context.Background())
-	defer cancelNormal()
-	normalDone := make(chan *httptest.ResponseRecorder, 1)
-	go func() {
-		r := httptest.NewRecorder()
-		h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/plex/account/server", nil).WithContext(normalCtx))
-		normalDone <- r
-	}()
-	<-normalStarted
-	cancelNormal()
-	if r := <-normalDone; r.Code != http.StatusServiceUnavailable {
-		t.Fatalf("normal waiter status=%d, want canceled discovery failure", r.Code)
+	select {
+	case <-normalStarted:
+	case <-time.After(time.Second):
+		t.Fatal("normal resolver did not start")
 	}
 
+	retryDone := make(chan resolveResult, 1)
+	go func() {
+		target, err := h.resolveWith(context.Background(), "account", "server", h.RetryResolve, true)
+		retryDone <- resolveResult{target: target, err: err}
+	}()
 	select {
 	case <-retryStarted:
 	case <-time.After(time.Second):
-		t.Fatal("retry resolver joined the in-flight normal resolver instead of forcing refresh")
+		t.Fatal("forced retry resolver joined the in-flight normal resolver")
 	}
-	close(releaseRetry)
-	if r := <-firstDone; r.Code != http.StatusInternalServerError {
-		t.Fatalf("retrying request status=%d, want retry resolver's nil-client state", r.Code)
+
+	releaseRetryResolver()
+	select {
+	case result := <-retryDone:
+		if result.err != nil || result.target.CorrelationKey != "target" {
+			t.Fatalf("forced retry result=%+v, want independent retry target", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("forced retry resolver did not finish")
+	}
+	releaseNormalResolver()
+	select {
+	case result := <-normalDone:
+		if !errors.Is(result.err, ErrDiscoveryUnavailable) {
+			t.Fatalf("normal result=%+v, want original discovery failure", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("normal resolver did not finish")
+	}
+	if got := normalCalls.Load(); got != 1 {
+		t.Fatalf("normal resolver calls=%d, want 1", got)
 	}
 	if got := retryCalls.Load(); got != 1 {
-		t.Fatalf("retry resolver calls=%d, want 1", got)
+		t.Fatalf("forced retry resolver calls=%d, want 1", got)
 	}
 }
 
