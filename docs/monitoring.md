@@ -28,8 +28,11 @@ http://plexctl:3003/plex/keithah/SF2
 ```
 
 Set the expected status to `200` and use a reasonable monitor timeout longer
-than the adapter's upstream deadline. Kuma will treat the adapter's `503` as a
-failure while retaining the JSON body in its monitor history.
+than the adapter's upstream deadline. Any non-`200` response is a Kuma failure:
+`503` identifies health, discovery, or dependency unavailability; `404`
+identifies invalid paths or configuration-target failures; `405` identifies a
+non-`GET` method; and `500` identifies invalid handler state. Kuma retains the
+safe JSON body in its monitor history.
 
 The implementation imports `internal/health` and the same
 configuration/authentication layers used by the CLI. The adapter is a
@@ -45,23 +48,48 @@ The handler should:
 
 1. Resolve the named account and server from the persisted configuration.
 2. Resolve credentials only at runtime from the OS credential store.
-3. Validate that server's durable, token-free cached endpoint against its stable
-   machine identifier. A successful cache validation skips Plex.tv entirely.
-   On a cold cache, validate the persisted profile URL before treating it as a
-   cache seed; never use it blindly.
-4. On cache and profile validation failure, discover current Plex.tv candidates,
-   validate them, and atomically replace the cache only after one matches.
-5. Run the bounded deep health check.
-6. Return a small, safe JSON response with the server name, stage,
-   classification, duration, and redacted detail.
-7. Return HTTP 200 only for a healthy result. Return HTTP 503 for an unhealthy
-   result, with 401/403, timeout, identity, and library classifications retained
-   in the body for diagnosis.
+3. Validate that server's durable, token-free cached endpoints against its stable
+   machine identifier. A successful cache validation skips Plex.tv entirely. The
+   adapter probes no more than three distinct cached or persisted-profile
+   endpoints before discovery: for a profile with a machine identifier, a
+   persisted profile URL is a durable fallback unless it already matches a
+   cached candidate. Within that pre-discovery sequence, never probe the same
+   URI twice or use any candidate blindly. A profile without a machine
+   identifier skips identity-validated cache/profile probing; discovery matches
+   its configured profile name, falling back to the configured server key.
+4. On cache and profile validation failure, discover current Plex.tv candidates
+   and atomically replace the cache only after one validates. Every HTTP request
+   waits under its own monitor deadline. The handler's shared selector-resolution
+   worker has a separate 30-second upper bound. When its last deadline-bound
+   waiter expires, the handler cancels that unresolved worker; a short or
+   canceled leader cannot terminate discovery needed by a healthy waiter. An
+   independently bounded Plex resource-cache refresh may finish after individual
+   waiters leave so that a subsequent request can use its fresh snapshot.
+5. If an otherwise valid target has a classified transient discovery failure
+   before that deadline, wait one second and retry the complete resolution
+   exactly once under the same request deadline, only if that deadline remains
+   active. If cache/profile validation still does not resolve the target, that
+   retry bypasses a fresh Plex resource-cache snapshot and requests one bounded
+   Plex.tv discovery refresh. Do not retry configuration failures,
+   resolver-capacity exhaustion, cancellation, or an expired deadline.
+6. Run the bounded deep health check.
+7. Return a small privacy-preserving JSON response containing only `ok`,
+   `stage`, `classification`, and (for completed health checks) `duration_ms`.
+   The account and server path selectors, URLs, tokens, media names, request or
+   response bodies, and upstream error detail must never be echoed.
+8. Return HTTP `200` only for a healthy result. Return HTTP `503` for
+   health/discovery/dependency failures, `404` for invalid request paths or
+   non-retryable configuration-target resolution, `405` for a non-`GET` method,
+   and `500` only for invalid handler or resolved-target state. Every non-`200`
+   response retains a safe stage/classification pair in its body for diagnosis.
 
-The adapter should bind to loopback or a private interface by default. It must
-not expose Plex tokens, credential values, authenticated URLs, or full upstream
-responses. A reverse proxy can publish it to Kuma if Kuma cannot reach the
-private bind address directly.
+The adapter should bind to loopback or a private interface by default. Its
+responses and logs must not expose account or server identifiers, Plex tokens,
+credential values, authenticated URLs, media names, request/response bodies, or
+upstream error detail. Resolution retry observability is limited to a stable
+outcome and attempt number; it never includes the failed selector or error. A
+reverse proxy can publish it to Kuma if Kuma cannot reach the private bind
+address directly.
 
 Example healthy response shape (illustrative; the exact schema is versioned
 in the adapter tests):
@@ -69,11 +97,19 @@ in the adapter tests):
 ```json
 {
   "ok": true,
-  "account": "keithah",
-  "server": "SF2",
   "stage": "library",
   "classification": "ok",
   "duration_ms": 142
+}
+```
+
+A resolution/configuration error uses the same safe shape without a duration:
+
+```json
+{
+  "ok": false,
+  "stage": "configuration",
+  "classification": "configuration"
 }
 ```
 

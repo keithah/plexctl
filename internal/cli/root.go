@@ -22,6 +22,7 @@ import (
 	"github.com/keithah/plexctl/internal/pms"
 	"github.com/keithah/plexctl/internal/sessiondiagnostics"
 	"github.com/spf13/cobra"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -1656,9 +1657,7 @@ func serveCmd(o *options) *cobra.Command {
 	resources := plexauth.NewResourceCache()
 	connections := connectioncache.New(connectioncache.Path())
 	cmd := &cobra.Command{Use: "serve", Short: "Serve HTTP health endpoints for Uptime Kuma", RunE: func(*cobra.Command, []string) error {
-		h := monitor.Handler{Timeout: o.timeout, Resolve: func(account, server string) (*pms.Client, error) {
-			return resolveServeTargetCached(o, account, server, resources, connections)
-		}}
+		h := newServeMonitorHandler(o, resources, connections)
 		s := &http.Server{Addr: listen, Handler: h}
 		fmt.Fprintf(os.Stderr, "plexctl monitoring adapter listening on %s\n", listen)
 		return s.ListenAndServe()
@@ -1667,47 +1666,93 @@ func serveCmd(o *options) *cobra.Command {
 	return cmd
 }
 
-func resolveServeTarget(o *options, account, server string) (*pms.Client, error) {
-	return resolveServeTargetCached(o, account, server, nil, nil)
+func newServeMonitorHandler(o *options, resources *plexauth.ResourceCache, connections *connectioncache.Store) *monitor.Handler {
+	return &monitor.Handler{
+		Timeout:      o.timeout,
+		ResolveRetry: 1,
+		RetryDelay:   time.Second,
+		Correlation:  monitor.NewCorrelationTracker(5*time.Minute, 3, nil),
+		OnCorrelation: func(event monitor.CorrelationEvent) {
+			log.Print(event.String())
+		},
+		OnResolution: func(event monitor.ResolutionEvent) {
+			log.Print(event.String())
+		},
+		Resolve: func(ctx context.Context, account, server string) (monitor.ResolvedTarget, error) {
+			return resolveServeMonitorTarget(ctx, account, server, resources, connections)
+		},
+		RetryResolve: func(ctx context.Context, account, server string) (monitor.ResolvedTarget, error) {
+			return resolveServeMonitorTargetWithRefresh(ctx, account, server, resources, connections, true)
+		},
+	}
 }
 
-func resolveServeTargetCached(o *options, account, server string, resources *plexauth.ResourceCache, connections *connectioncache.Store) (*pms.Client, error) {
+func resolveServeTarget(o *options, account, server string) (*pms.Client, error) {
+	ctx, cancel := commandContext(o)
+	defer cancel()
+	return resolveServeTargetCached(ctx, account, server, nil, nil)
+}
+
+func resolveServeTargetCached(ctx context.Context, account, server string, resources *plexauth.ResourceCache, connections *connectioncache.Store) (*pms.Client, error) {
+	target, err := resolveServeMonitorTarget(ctx, account, server, resources, connections)
+	return target.Client, err
+}
+
+// resolveServeMonitorTarget resolves a monitor selector to its client and a
+// stable configured-profile key. The key keeps correlation aggregate-only even
+// when a single profile is reachable through several case-insensitive aliases.
+func resolveServeMonitorTarget(ctx context.Context, account, server string, resources *plexauth.ResourceCache, connections *connectioncache.Store) (monitor.ResolvedTarget, error) {
+	return resolveServeMonitorTargetWithRefresh(ctx, account, server, resources, connections, false)
+}
+
+func resolveServeMonitorTargetWithRefresh(ctx context.Context, account, server string, resources *plexauth.ResourceCache, connections *connectioncache.Store, forceResourceRefresh bool) (monitor.ResolvedTarget, error) {
 	c, err := config.Load(config.Path())
 	if err != nil {
-		return nil, err
+		return monitor.ResolvedTarget{}, err
 	}
+	configuredKey, profile, err := resolveServeProfile(c, account, server)
+	if err != nil {
+		return monitor.ResolvedTarget{}, err
+	}
+	target := monitor.ResolvedTarget{CorrelationKey: configuredKey}
+	target.Client, err = resolveFreshServeTargetWithRefresh(ctx, c, account, server, profile, resources, connections, forceResourceRefresh)
+	return target, err
+}
+
+func resolveServeProfile(c config.Config, account, server string) (string, config.ServerProfile, error) {
 	// Profiles provide stable identity and account binding only. Their URL is
 	// deliberately ignored: Plex.tv may advertise a different connection later.
-	var profile config.ServerProfile
 	if p, ok := c.ServersV2[server]; ok {
 		if p.Account != account {
-			return nil, fmt.Errorf("server %q belongs to account %q", server, p.Account)
+			return "", config.ServerProfile{}, fmt.Errorf("server %q belongs to account %q", server, p.Account)
 		}
-		profile = p
-	} else {
-		var candidates []string
+		return server, p, nil
+	}
+	// Profile keys are canonical monitor selectors. Case-insensitive key aliases
+	// take precedence over display names so an alias cannot redirect aggregate
+	// correlation to a different configured profile.
+	var candidates []string
+	for id, prof := range c.ServersV2 {
+		if prof.Account == account && strings.EqualFold(id, server) {
+			candidates = append(candidates, id)
+		}
+	}
+	if len(candidates) == 0 {
 		for id, prof := range c.ServersV2 {
 			if prof.Account == account && strings.EqualFold(prof.Name, server) {
 				candidates = append(candidates, id)
 			}
 		}
-		if len(candidates) == 0 {
-			for id, prof := range c.ServersV2 {
-				if prof.Account == account && strings.EqualFold(id, server) {
-					candidates = append(candidates, id)
-				}
-			}
-		}
-		if len(candidates) == 0 {
-			return nil, fmt.Errorf("server %q is not configured", server)
-		}
-		sort.Strings(candidates)
-		if len(candidates) > 1 {
-			return nil, fmt.Errorf("server %q matches multiple profiles: %s", server, strings.Join(candidates, ", "))
-		}
-		profile = c.ServersV2[candidates[0]]
 	}
-	return resolveFreshServeTarget(o, c, account, server, profile, resources, connections)
+	if len(candidates) == 0 {
+		return "", config.ServerProfile{}, fmt.Errorf("server %q is not configured", server)
+	}
+	sort.Strings(candidates)
+	if len(candidates) > 1 {
+		return "", config.ServerProfile{}, fmt.Errorf("server %q matches multiple profiles: %s", server, strings.Join(candidates, ", "))
+	}
+	key := candidates[0]
+	return key, c.ServersV2[key], nil
 }
 
 func cachedServeToken(profile config.ServerProfile, accountToken string) (string, error) {
@@ -1730,15 +1775,12 @@ func resolveCachedServeTarget(ctx context.Context, connections *connectioncache.
 	}
 	var candidates []plexauth.Connection
 	if connections != nil {
-		connection, ok, err := connections.Get(account, profile.MachineIdentifier)
-		if err == nil && ok {
-			candidates = append(candidates, connection)
+		cached, err := connections.Candidates(account, profile.MachineIdentifier)
+		if err == nil {
+			candidates = append(candidates, cached...)
 		}
 	}
-	if profile.URL != "" {
-		candidates = append(candidates, plexauth.Connection{URI: profile.URL, Local: profile.Local, Relay: profile.Relay})
-	}
-	for _, candidate := range candidates {
+	for _, candidate := range serveCandidates(candidates, profile) {
 		validated, err := validatedConnection(ctx, plexauth.Resource{
 			ClientIdentifier: profile.MachineIdentifier,
 			Connections:      []plexauth.Connection{candidate},
@@ -1759,11 +1801,57 @@ func resolveCachedServeTarget(ctx context.Context, connections *connectioncache.
 	return nil, false, nil
 }
 
+const maxServeCandidates = 3
+
+// serveCandidates limits all cache and profile endpoint probes to the same
+// bounded budget. When configured, the profile endpoint always receives one
+// probe because it is the durable fallback when cached history is stale. If it
+// is already cached, that probe is satisfied by the cached candidate without
+// consuming a second slot. Every returned candidate still requires an identity
+// probe.
+func serveCandidates(cached []plexauth.Connection, profile config.ServerProfile) []plexauth.Connection {
+	candidates := make([]plexauth.Connection, 0, maxServeCandidates)
+	profilePending := profile.URL != ""
+	for _, candidate := range cached {
+		if candidate.URI == "" || containsServeCandidate(candidates, candidate) {
+			continue
+		}
+		isProfile := profilePending && candidate.URI == profile.URL
+		if !isProfile && profilePending && len(candidates) == maxServeCandidates-1 {
+			continue
+		}
+		candidates = append(candidates, candidate)
+		if isProfile {
+			profilePending = false
+		}
+		if len(candidates) == maxServeCandidates {
+			return candidates
+		}
+	}
+	if profilePending && len(candidates) < maxServeCandidates {
+		candidates = append(candidates, plexauth.Connection{URI: profile.URL, Local: profile.Local, Relay: profile.Relay})
+	}
+	return candidates
+}
+
+func containsServeCandidate(candidates []plexauth.Connection, candidate plexauth.Connection) bool {
+	for _, existing := range candidates {
+		if existing.URI == candidate.URI {
+			return true
+		}
+	}
+	return false
+}
+
 // resolveFreshServeTarget uses a previously validated endpoint whenever it is
 // still the expected PMS. Plex.tv discovery occurs only after a cache miss or
 // an endpoint validation failure, and a fresh discovery is persisted only once
 // the advertised connection has passed the same identity check.
-func resolveFreshServeTarget(o *options, c config.Config, account, requested string, profile config.ServerProfile, resourceCache *plexauth.ResourceCache, connections *connectioncache.Store) (*pms.Client, error) {
+func resolveFreshServeTarget(ctx context.Context, c config.Config, account, requested string, profile config.ServerProfile, resourceCache *plexauth.ResourceCache, connections *connectioncache.Store) (*pms.Client, error) {
+	return resolveFreshServeTargetWithRefresh(ctx, c, account, requested, profile, resourceCache, connections, false)
+}
+
+func resolveFreshServeTargetWithRefresh(ctx context.Context, c config.Config, account, requested string, profile config.ServerProfile, resourceCache *plexauth.ResourceCache, connections *connectioncache.Store, forceResourceRefresh bool) (*pms.Client, error) {
 	a, ok := c.Accounts[account]
 	if !ok {
 		return nil, fmt.Errorf("account %q is not configured", account)
@@ -1772,35 +1860,40 @@ func resolveFreshServeTarget(o *options, c config.Config, account, requested str
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := commandContext(o)
-	defer cancel()
+	// An identity-validated durable candidate remains authoritative on a retry;
+	// forceResourceRefresh only bypasses the Plex resource snapshot after this
+	// cache/profile check fails.
 	if cached, ok, err := resolveCachedServeTarget(ctx, connections, account, profile, accountToken); err != nil {
 		return nil, fmt.Errorf("read cached connection for %s/%s: %w", account, requested, err)
 	} else if ok {
 		return cached, nil
 	}
 	plex := plexauth.New("https://plex.tv", "plexctl", nil)
-	resources, err := resourceCache.Resources(ctx, plex, accountToken, plexResourceCacheTTL)
+	var resources []plexauth.Resource
+	if forceResourceRefresh {
+		resources, err = resourceCache.Refresh(ctx, plex, accountToken, plexResourceCacheTTL)
+	} else {
+		resources, err = resourceCache.Resources(ctx, plex, accountToken, plexResourceCacheTTL)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("refresh Plex connections for %s: %w", account, err)
+		return nil, discoveryErrorFrom("refresh Plex connections", err)
 	}
 	var matches []plexauth.Resource
-	for _, resource := range resources {
-		if profile.MachineIdentifier != "" && resource.ClientIdentifier == profile.MachineIdentifier {
-			matches = append(matches, resource)
-		} else if profile.MachineIdentifier == "" && strings.EqualFold(resource.Name, requested) {
-			matches = append(matches, resource)
+	matches = matchingServeResources(resources, profile, requested)
+	if len(matches) == 0 {
+		if previous, ok := resourceCache.PreviousResources(plex, accountToken, plexResourceCacheTTL); ok {
+			matches = matchingServeResources(previous, profile, requested)
 		}
 	}
 	if len(matches) == 0 {
-		return nil, fmt.Errorf("server %q is not currently advertised by Plex.tv", requested)
+		return nil, discoveryError("configured server absent")
 	}
 	if len(matches) > 1 {
-		return nil, fmt.Errorf("server %q has ambiguous Plex.tv identity", requested)
+		return nil, discoveryError("ambiguous advertised server")
 	}
 	connection, err := validatedConnection(ctx, matches[0], accountToken)
 	if err != nil {
-		return nil, fmt.Errorf("refresh connection for %s/%s: %w", account, requested, err)
+		return nil, discoveryErrorFrom("advertised connection did not validate", err)
 	}
 	normalized := normalizeDiscoveredConnection(connection)
 	if connections != nil && profile.MachineIdentifier != "" {
@@ -1814,6 +1907,41 @@ func resolveFreshServeTarget(o *options, c config.Config, account, requested str
 	}
 	return newPMSClient(config.Server{URL: normalized.URL, InsecureTLS: normalized.InsecureTLS}, token)
 }
+
+func discoveryError(reason string) error {
+	return fmt.Errorf("%w: %s", monitor.ErrDiscoveryUnavailable, reason)
+}
+
+// discoveryErrorFrom preserves terminal context causes so the monitor can avoid
+// retrying work that already exceeded its detached resolution budget. Other
+// upstream failures remain intentionally hidden behind the safe classification.
+func discoveryErrorFrom(reason string, cause error) error {
+	classified := discoveryError(reason)
+	if errors.Is(cause, context.Canceled) {
+		return errors.Join(classified, context.Canceled)
+	}
+	if errors.Is(cause, context.DeadlineExceeded) {
+		return errors.Join(classified, context.DeadlineExceeded)
+	}
+	return classified
+}
+
+func matchingServeResources(resources []plexauth.Resource, profile config.ServerProfile, requested string) []plexauth.Resource {
+	name := profile.Name
+	if name == "" {
+		name = requested
+	}
+	var matches []plexauth.Resource
+	for _, resource := range resources {
+		if profile.MachineIdentifier != "" && resource.ClientIdentifier == profile.MachineIdentifier {
+			matches = append(matches, resource)
+		} else if profile.MachineIdentifier == "" && name != "" && strings.EqualFold(resource.Name, name) {
+			matches = append(matches, resource)
+		}
+	}
+	return matches
+}
+
 func apiCmd(o *options) *cobra.Command {
 	cmd := &cobra.Command{Use: "api METHOD PATH", Args: cobra.ExactArgs(2), RunE: func(_ *cobra.Command, a []string) error {
 		method := a[0]

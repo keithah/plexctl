@@ -3,16 +3,21 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/keithah/plexctl/internal/config"
 	"github.com/keithah/plexctl/internal/connectioncache"
+	"github.com/keithah/plexctl/internal/monitor"
 	"github.com/keithah/plexctl/internal/plexauth"
 )
 
@@ -25,6 +30,132 @@ func run(t *testing.T, args ...string) (string, error) {
 	root.SetArgs(args)
 	err := root.Execute()
 	return buf.String(), err
+}
+
+func TestServeHandlerEnablesBoundedResolutionRetry(t *testing.T) {
+	h := newServeMonitorHandler(&options{}, nil, nil)
+	if h.ResolveRetry != 1 || h.RetryDelay != time.Second || h.OnResolution == nil || h.Resolve == nil || h.RetryResolve == nil {
+		t.Fatalf("handler does not enable one delayed resolution retry with a fresh retry resolver")
+	}
+}
+
+type retryRecoveryDiscoveryTransport struct {
+	base        http.RoundTripper
+	upstreamURL string
+	calls       atomic.Int32
+}
+
+func (t *retryRecoveryDiscoveryTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.URL.Scheme == "https" && r.URL.Host == "plex.tv" && r.URL.Path == "/api/resources" {
+		call := t.calls.Add(1)
+		payload := `<MediaContainer><Device name="other" clientIdentifier="other" provides="server" owned="1"><Connection uri="http://other.invalid:32400" local="1"/></Device></MediaContainer>`
+		if call == 2 {
+			payload = fmt.Sprintf(`<MediaContainer><Device name="expected" clientIdentifier="machine" provides="server" owned="1"><Connection uri="%s" local="1" relay="0"/></Device></MediaContainer>`, t.upstreamURL)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(payload)),
+			Request:    r,
+		}, nil
+	}
+	return t.base.RoundTrip(r)
+}
+
+func TestServeHandlerRetriesWithFreshResourceDiscovery(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/identity":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"machineIdentifier":"machine"}}`))
+		case "/library/sections/all":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"size":1,"Directory":[{"key":"1","type":"movie"}]}}`))
+		case "/library/sections/1/all":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"Metadata":[{"key":"11"}]}}`))
+		case "/library/metadata/11":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"key":"/library/parts/1/file.mkv"}]}]}]}}`))
+		case "/library/parts/1/file.mkv":
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(make([]byte, 1024))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	t.Setenv("PLEXCTL_TOKEN_ACCOUNT_TOKEN", "x")
+	oldTransport := http.DefaultTransport
+	transport := &retryRecoveryDiscoveryTransport{base: oldTransport, upstreamURL: upstream.URL}
+	http.DefaultTransport = transport
+	t.Cleanup(func() { http.DefaultTransport = oldTransport })
+
+	cfg := config.Config{Accounts: map[string]config.Account{
+		"account": {TokenKey: "account/token"},
+	}}
+	profile := config.ServerProfile{Account: "account", MachineIdentifier: "machine"}
+	resources := plexauth.NewResourceCache()
+	h := monitor.Handler{
+		ResolveRetry: 1,
+		RetryDelay:   0,
+		Resolve: func(ctx context.Context, account, server string) (monitor.ResolvedTarget, error) {
+			client, err := resolveFreshServeTarget(ctx, cfg, account, server, profile, resources, nil)
+			return monitor.ResolvedTarget{Client: client, CorrelationKey: "server"}, err
+		},
+		RetryResolve: func(ctx context.Context, account, server string) (monitor.ResolvedTarget, error) {
+			client, err := resolveFreshServeTargetWithRefresh(ctx, cfg, account, server, profile, resources, nil, true)
+			return monitor.ResolvedTarget{Client: client, CorrelationKey: "server"}, err
+		},
+	}
+
+	r := httptest.NewRecorder()
+	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/plex/account/server", nil))
+	if r.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s, want recovered 200 after retry", r.Code, r.Body)
+	}
+	if got := transport.calls.Load(); got != 2 {
+		t.Fatalf("Plex resource discovery calls=%d, want 2 after recovery", got)
+	}
+}
+
+func TestResolveFreshServeTargetWithRefreshKeepsValidatedConnectionCacheFirst(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/identity" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"MediaContainer":{"machineIdentifier":"machine"}}`))
+	}))
+	defer upstream.Close()
+
+	t.Setenv("PLEXCTL_TOKEN_ACCOUNT_TOKEN", "x")
+	oldTransport := http.DefaultTransport
+	transport := &retryRecoveryDiscoveryTransport{base: oldTransport}
+	http.DefaultTransport = transport
+	t.Cleanup(func() { http.DefaultTransport = oldTransport })
+
+	connections := connectioncache.New(filepath.Join(t.TempDir(), "connections.json"))
+	if err := connections.Put("account", "machine", plexauth.Connection{URI: upstream.URL, Local: true}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{Accounts: map[string]config.Account{
+		"account": {TokenKey: "account/token"},
+	}}
+	client, err := resolveFreshServeTargetWithRefresh(
+		context.Background(),
+		cfg,
+		"account",
+		"server",
+		config.ServerProfile{Account: "account", MachineIdentifier: "machine"},
+		plexauth.NewResourceCache(),
+		connections,
+		true,
+	)
+	if err != nil || client == nil {
+		t.Fatalf("client=%v err=%v, want validated cached connection", client, err)
+	}
+	if got := transport.calls.Load(); got != 0 {
+		t.Fatalf("Plex resource discovery calls=%d, want cache-first retry without discovery", got)
+	}
 }
 
 func TestCommandTreeIsRegistered(t *testing.T) {
@@ -358,6 +489,42 @@ func TestResolveCachedServeTargetSeedsCacheFromValidatedProfileURL(t *testing.T)
 	}
 }
 
+func TestResolveCachedServeTargetReservesProbeForConfiguredProfile(t *testing.T) {
+	var staleRequests int
+	cache := connectioncache.New(filepath.Join(t.TempDir(), "connections.json"))
+	for i := 0; i < 3; i++ {
+		stale := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			staleRequests++
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+		}))
+		defer stale.Close()
+		if err := cache.Put("account", "machine", plexauth.Connection{URI: stale.URL, Local: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	profileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"MediaContainer":{"machineIdentifier":"machine"}}`))
+	}))
+	defer profileServer.Close()
+
+	client, ok, err := resolveCachedServeTarget(context.Background(), cache, "account", config.ServerProfile{
+		MachineIdentifier: "machine",
+		URL:               profileServer.URL,
+		Local:             true,
+	}, "token")
+	if err != nil || !ok {
+		t.Fatalf("resolveCachedServeTarget ok=%t err=%v, want configured-profile fallback", ok, err)
+	}
+	if staleRequests != 2 {
+		t.Fatalf("stale endpoint requests=%d, want two before configured profile", staleRequests)
+	}
+	identity, err := client.Identity(context.Background())
+	if err != nil || identity.MediaContainer.MachineIdentifier != "machine" {
+		t.Fatalf("identity=%+v err=%v", identity, err)
+	}
+}
+
 func TestResolveCachedServeTargetFallsBackWhenIdentityNoLongerMatches(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -377,6 +544,201 @@ func TestResolveCachedServeTargetFallsBackWhenIdentityNoLongerMatches(t *testing
 		t.Fatal("cache selected an endpoint with the wrong machine identifier")
 	}
 }
+
+func TestServeCandidatesReservesProbeForConfiguredProfile(t *testing.T) {
+	cached := []plexauth.Connection{
+		{URI: "https://one.example:32400"},
+		{URI: "https://two.example:32400"},
+		{URI: "https://three.example:32400"},
+	}
+	got := serveCandidates(cached, config.ServerProfile{URL: "https://profile.example:32400"})
+	if len(got) != 3 {
+		t.Fatalf("candidate count=%d, want 3", len(got))
+	}
+	for i, want := range []string{"https://one.example:32400", "https://two.example:32400", "https://profile.example:32400"} {
+		if got[i].URI != want {
+			t.Fatalf("candidate[%d]=%q, want %q", i, got[i].URI, want)
+		}
+	}
+}
+
+func TestServeCandidatesDoesNotDuplicateCachedProfileEndpoint(t *testing.T) {
+	cached := []plexauth.Connection{
+		{URI: "https://profile.example:32400"},
+		{URI: "https://stale.example:32400"},
+		{URI: "https://healthy.example:32400"},
+	}
+	got := serveCandidates(cached, config.ServerProfile{URL: "https://profile.example:32400"})
+	if len(got) != 3 {
+		t.Fatalf("candidate count=%d, want 3", len(got))
+	}
+	for i, want := range []string{"https://profile.example:32400", "https://stale.example:32400", "https://healthy.example:32400"} {
+		if got[i].URI != want {
+			t.Fatalf("candidate[%d]=%q, want %q", i, got[i].URI, want)
+		}
+	}
+}
+
+func TestResolveCachedServeTargetUsesOlderValidatedCandidate(t *testing.T) {
+	valid := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"MediaContainer":{"machineIdentifier":"machine"}}`))
+	}))
+	defer valid.Close()
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer dead.Close()
+
+	cache := connectioncache.New(filepath.Join(t.TempDir(), "connections.json"))
+	if err := cache.Put("account", "machine", plexauth.Connection{URI: valid.URL, Local: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.Put("account", "machine", plexauth.Connection{URI: dead.URL, Local: true}); err != nil {
+		t.Fatal(err)
+	}
+	client, ok, err := resolveCachedServeTarget(context.Background(), cache, "account", config.ServerProfile{MachineIdentifier: "machine"}, "token")
+	if err != nil || !ok {
+		t.Fatalf("resolveCachedServeTarget ok=%t err=%v, want valid older candidate", ok, err)
+	}
+	identity, err := client.Identity(context.Background())
+	if err != nil || identity.MediaContainer.MachineIdentifier != "machine" {
+		t.Fatalf("identity=%+v err=%v", identity, err)
+	}
+}
+
+func TestDiscoveryErrorUsesUnavailableSentinel(t *testing.T) {
+	if !errors.Is(discoveryError("ambiguous advertised server"), monitor.ErrDiscoveryUnavailable) {
+		t.Fatal("discovery error must map to monitor discovery unavailability")
+	}
+}
+
+type terminalDiscoveryRoundTripper struct{}
+
+func (terminalDiscoveryRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, context.DeadlineExceeded
+}
+
+func terminalFreshDiscoveryError(t *testing.T) error {
+	t.Helper()
+	oldTransport := http.DefaultTransport
+	http.DefaultTransport = terminalDiscoveryRoundTripper{}
+	t.Cleanup(func() { http.DefaultTransport = oldTransport })
+	t.Setenv("PLEXCTL_TOKEN_ACCOUNT_TOKEN", "x")
+
+	cfg := config.Config{Accounts: map[string]config.Account{
+		"account": {TokenKey: "account/token"},
+	}}
+	_, err := resolveFreshServeTarget(
+		context.Background(),
+		cfg,
+		"account",
+		"server",
+		config.ServerProfile{Account: "account", MachineIdentifier: "machine"},
+		plexauth.NewResourceCache(),
+		nil,
+	)
+	if err == nil {
+		t.Fatal("resolveFreshServeTarget unexpectedly succeeded")
+	}
+	return err
+}
+
+func TestResolveFreshServeTargetPreservesTerminalDiscoveryCause(t *testing.T) {
+	err := terminalFreshDiscoveryError(t)
+	if !errors.Is(err, monitor.ErrDiscoveryUnavailable) {
+		t.Fatalf("error=%v, want discovery classification", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error=%v, want preserved terminal discovery cause", err)
+	}
+}
+
+func TestDiscoveryErrorFromHidesTerminalCauseDetail(t *testing.T) {
+	privateDetail := "https://private.example/?token=secret"
+	cause := fmt.Errorf("upstream failed at %s: %w", privateDetail, context.DeadlineExceeded)
+	err := discoveryErrorFrom("refresh Plex connections", cause)
+	if !errors.Is(err, monitor.ErrDiscoveryUnavailable) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error=%v, want safe discovery classification with terminal cause", err)
+	}
+	if strings.Contains(err.Error(), privateDetail) {
+		t.Fatalf("error leaked terminal-cause detail: %q", err)
+	}
+}
+
+func TestServeHandlerDoesNotRetryTerminalFreshDiscoveryFailure(t *testing.T) {
+	err := terminalFreshDiscoveryError(t)
+	attempts := 0
+	h := monitor.Handler{
+		ResolveRetry: 1,
+		RetryDelay:   0,
+		Resolve: func(context.Context, string, string) (monitor.ResolvedTarget, error) {
+			attempts++
+			return monitor.ResolvedTarget{CorrelationKey: "probe"}, err
+		},
+	}
+	r := httptest.NewRecorder()
+	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/plex/account/server", nil))
+	if r.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d, want terminal discovery failure", r.Code)
+	}
+	if attempts != 1 {
+		t.Fatalf("resolve attempts=%d, want no retry for terminal fresh discovery failure", attempts)
+	}
+}
+
+func TestMatchingServeResourcesUsesConfiguredMachineIdentity(t *testing.T) {
+	resources := []plexauth.Resource{
+		{Name: "expected", ClientIdentifier: "machine"},
+		{Name: "same-name-wrong-machine", ClientIdentifier: "other"},
+	}
+	matches := matchingServeResources(resources, config.ServerProfile{MachineIdentifier: "machine"}, "expected")
+	if len(matches) != 1 || matches[0].ClientIdentifier != "machine" {
+		t.Fatalf("matches=%+v, want one expected machine", matches)
+	}
+}
+
+func TestMatchingServeResourcesUsesProfileNameForIdentitylessProfile(t *testing.T) {
+	resources := []plexauth.Resource{{Name: "Alpha"}}
+	matches := matchingServeResources(resources, config.ServerProfile{Name: "Alpha"}, "account-cdac42a10e36")
+	if len(matches) != 1 || matches[0].Name != "Alpha" {
+		t.Fatalf("matches=%+v, want identity-less profile name match", matches)
+	}
+}
+
+func TestMatchingServeResourcesFallsBackToConfiguredKeyWhenProfileNameMissing(t *testing.T) {
+	resources := []plexauth.Resource{{Name: "Alpha"}}
+	matches := matchingServeResources(resources, config.ServerProfile{}, "Alpha")
+	if len(matches) != 1 || matches[0].Name != "Alpha" {
+		t.Fatalf("matches=%+v, want identity-less configured-key fallback", matches)
+	}
+}
+
+func TestResolveServeProfileCanonicalizesDisplayAndKeyAliases(t *testing.T) {
+	cfg := config.Config{ServersV2: map[string]config.ServerProfile{
+		"profile-key": {Account: "account", Name: "Alpha"},
+	}}
+	for _, requested := range []string{"Alpha", "PROFILE-KEY"} {
+		key, profile, err := resolveServeProfile(cfg, "account", requested)
+		if err != nil || key != "profile-key" || profile.Name != "Alpha" {
+			t.Fatalf("resolveServeProfile(%q) = %q, %+v, %v", requested, key, profile, err)
+		}
+	}
+}
+
+func TestResolveServeProfilePrefersCaseInsensitiveKeyOverDisplayName(t *testing.T) {
+	cfg := config.Config{ServersV2: map[string]config.ServerProfile{
+		"alpha": {Account: "account", Name: "Primary"},
+		"beta":  {Account: "account", Name: "ALPHA"},
+	}}
+	for _, requested := range []string{"alpha", "ALPHA"} {
+		key, profile, err := resolveServeProfile(cfg, "account", requested)
+		if err != nil || key != "alpha" || profile.Name != "Primary" {
+			t.Fatalf("resolveServeProfile(%q) = %q, %+v, %v; want alpha Primary nil", requested, key, profile, err)
+		}
+	}
+}
+
 func TestResolveConfiguredConnectionFallsBackToCurrentV2ServerLegacyEntry(t *testing.T) {
 	resolved, err := resolveConfiguredConnection(config.Config{
 		Current:       "legacy-default",
