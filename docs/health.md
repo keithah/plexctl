@@ -43,7 +43,10 @@ discovery needed by a healthy waiter. The independently bounded Plex resource
 cache refresh intentionally does not inherit an individual waiter's
 cancellation, so it can finish a reusable discovery snapshot. A classified
 transient discovery failure can make one additional resolution attempt after a
-one-second delay only while that request deadline remains active. Configuration
-failures, cancellation, and expired requests never retry.
+one-second delay only while that request deadline remains active. If
+identity-validated cache/profile candidates still do not resolve the target,
+that retry bypasses a fresh Plex resource-cache snapshot and requests one
+bounded Plex.tv discovery refresh. Configuration failures, cancellation, and
+expired requests never retry.
 Retry logs contain only a stable outcome and attempt number, never a selected
 account/server, endpoint, credential, or raw upstream error.

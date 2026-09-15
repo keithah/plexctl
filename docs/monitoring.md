@@ -68,8 +68,10 @@ The handler should:
 5. If an otherwise valid target has a classified transient discovery failure
    before that deadline, wait one second and retry the complete resolution
    exactly once under the same request deadline, only if that deadline remains
-   active. Do not retry configuration failures, resolver-capacity exhaustion,
-   cancellation, or an expired deadline.
+   active. If cache/profile validation still does not resolve the target, that
+   retry bypasses a fresh Plex resource-cache snapshot and requests one bounded
+   Plex.tv discovery refresh. Do not retry configuration failures,
+   resolver-capacity exhaustion, cancellation, or an expired deadline.
 6. Run the bounded deep health check.
 7. Return a small privacy-preserving JSON response containing only `ok`,
    `stage`, `classification`, and (for completed health checks) `duration_ms`.

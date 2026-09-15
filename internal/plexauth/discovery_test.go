@@ -76,6 +76,106 @@ func TestResourceCacheRetainsPreviousCompleteSnapshot(t *testing.T) {
 	}
 }
 
+func TestResourceCacheRefreshBypassesFreshSnapshot(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/resources" {
+			http.NotFound(w, r)
+			return
+		}
+		calls++
+		w.Header().Set("Content-Type", "application/xml")
+		fmt.Fprintf(w, `<MediaContainer><Device name="server-%d" clientIdentifier="id-%d"/></MediaContainer>`, calls, calls)
+	}))
+	defer server.Close()
+
+	cache := NewResourceCache()
+	client := New(server.URL, "test", &http.Client{})
+	first, err := cache.Resources(context.Background(), client, "token", time.Minute)
+	if err != nil || len(first) != 1 || first[0].ClientIdentifier != "id-1" {
+		t.Fatalf("first resources=%+v err=%v, want id-1", first, err)
+	}
+	refreshed, err := cache.Refresh(context.Background(), client, "token", time.Minute)
+	if err != nil || len(refreshed) != 1 || refreshed[0].ClientIdentifier != "id-2" {
+		t.Fatalf("refreshed resources=%+v err=%v, want id-2", refreshed, err)
+	}
+	if calls != 2 {
+		t.Fatalf("discovery calls=%d, want forced refresh to bypass fresh cache", calls)
+	}
+	cached, err := cache.Resources(context.Background(), client, "token", time.Minute)
+	if err != nil || len(cached) != 1 || cached[0].ClientIdentifier != "id-2" || calls != 2 {
+		t.Fatalf("cached resources=%+v err=%v calls=%d, want refreshed id-2 without third call", cached, err, calls)
+	}
+}
+
+func TestResourceCacheRefreshJoinsInFlightForcedRefresh(t *testing.T) {
+	var mu sync.Mutex
+	calls := 0
+	refreshStarted := make(chan struct{})
+	thirdRequest := make(chan struct{}, 1)
+	releaseRefresh := make(chan struct{})
+	var releaseOnce sync.Once
+	defer func() { releaseOnce.Do(func() { close(releaseRefresh) }) }()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/resources" {
+			http.NotFound(w, r)
+			return
+		}
+		mu.Lock()
+		calls++
+		call := calls
+		mu.Unlock()
+		if call == 2 {
+			close(refreshStarted)
+			<-releaseRefresh
+		}
+		if call == 3 {
+			thirdRequest <- struct{}{}
+		}
+		w.Header().Set("Content-Type", "application/xml")
+		fmt.Fprintf(w, `<MediaContainer><Device name="server-%d" clientIdentifier="id-%d"/></MediaContainer>`, call, call)
+	}))
+	defer server.Close()
+
+	cache := NewResourceCache()
+	client := New(server.URL, "test", &http.Client{})
+	if _, err := cache.Resources(context.Background(), client, "token", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+
+	type refreshResult struct {
+		resources []Resource
+		err       error
+	}
+	results := make(chan refreshResult, 2)
+	go func() {
+		resources, err := cache.Refresh(context.Background(), client, "token", time.Minute)
+		results <- refreshResult{resources: resources, err: err}
+	}()
+	<-refreshStarted
+	go func() {
+		resources, err := cache.Refresh(context.Background(), client, "token", time.Minute)
+		results <- refreshResult{resources: resources, err: err}
+	}()
+	select {
+	case <-thirdRequest:
+		t.Fatal("forced refresh issued a second same-key discovery request")
+	case <-time.After(50 * time.Millisecond):
+	}
+	releaseOnce.Do(func() { close(releaseRefresh) })
+	for range 2 {
+		result := <-results
+		if result.err != nil || len(result.resources) != 1 || result.resources[0].ClientIdentifier != "id-2" {
+			t.Fatalf("resources=%+v err=%v, want shared forced refresh id-2", result.resources, result.err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 2 {
+		t.Fatalf("discovery calls=%d, want initial and one shared forced refresh", calls)
+	}
+}
+
 func TestResourceCacheSerializesSameKeyRefreshAndRetainsPreRefreshSnapshot(t *testing.T) {
 	var mu sync.Mutex
 	calls := 0

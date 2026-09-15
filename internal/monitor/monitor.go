@@ -55,7 +55,11 @@ func (e ResolutionEvent) String() string {
 // first use.
 type Handler struct {
 	Resolve Resolver
-	Timeout time.Duration
+	// RetryResolve optionally replaces Resolve for the one classified discovery
+	// retry. It lets an adapter revalidate retry-specific discovery state without
+	// changing normal resolution; nil falls back to Resolve.
+	RetryResolve Resolver
+	Timeout      time.Duration
 	// ResolveRetry enables one retry for a classified discovery failure. Values
 	// above one never increase the fixed retry limit.
 	ResolveRetry int
@@ -84,6 +88,10 @@ type resolveCall struct {
 type resolveKey struct {
 	account string
 	server  string
+	// forceRetry separates a forced discovery retry from a normal cache-first
+	// resolver call for the same raw selector. Otherwise a retry could join a
+	// normal call and lose its required resource-cache revalidation.
+	forceRetry bool
 }
 
 type resolveState struct {
@@ -119,12 +127,16 @@ func (h *Handler) reportResolution(event ResolutionEvent) {
 }
 
 func (h *Handler) resolve(ctx context.Context, account, server string) (ResolvedTarget, error) {
+	return h.resolveWith(ctx, account, server, h.Resolve, false)
+}
+
+func (h *Handler) resolveWith(ctx context.Context, account, server string, resolver Resolver, forceRetry bool) (ResolvedTarget, error) {
 	if err := contextTerminalError(ctx); err != nil {
 		return ResolvedTarget{}, err
 	}
 
 	state := h.resolutionState()
-	key := resolveKey{account: account, server: server}
+	key := resolveKey{account: account, server: server, forceRetry: forceRetry}
 	state.mu.Lock()
 	call := state.calls[key]
 	if call == nil {
@@ -133,7 +145,7 @@ func (h *Handler) resolve(ctx context.Context, account, server string) (Resolved
 			resolveCtx, cancel := h.resolutionContext()
 			call = &resolveCall{done: make(chan struct{}), cancel: cancel, waiters: 1}
 			state.calls[key] = call
-			go h.runResolution(state, key, call, resolveCtx, account, server)
+			go h.runResolution(state, key, call, resolveCtx, account, server, resolver)
 		default:
 			state.mu.Unlock()
 			return ResolvedTarget{}, errResolverCapacity
@@ -198,8 +210,8 @@ func contextTerminalError(ctx context.Context) error {
 	return nil
 }
 
-func (h *Handler) runResolution(state *resolveState, key resolveKey, call *resolveCall, ctx context.Context, account, server string) {
-	target, err := h.Resolve(ctx, account, server)
+func (h *Handler) runResolution(state *resolveState, key resolveKey, call *resolveCall, ctx context.Context, account, server string, resolver Resolver) {
+	target, err := resolver(ctx, account, server)
 	call.cancel()
 
 	state.mu.Lock()
@@ -226,7 +238,13 @@ func (h *Handler) retryResolution(ctx context.Context, account, server string) (
 	}
 
 	h.reportResolution(ResolutionEvent{Outcome: "retry", Attempt: 1})
-	retryTarget, retryErr := h.resolve(ctx, account, server)
+	retryResolver := h.Resolve
+	forceRetry := false
+	if h.RetryResolve != nil {
+		retryResolver = h.RetryResolve
+		forceRetry = true
+	}
+	retryTarget, retryErr := h.resolveWith(ctx, account, server, retryResolver, forceRetry)
 	if retryTarget.CorrelationKey == "" {
 		retryTarget.CorrelationKey = target.CorrelationKey
 	}

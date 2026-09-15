@@ -169,6 +169,16 @@ const resourceCacheRefreshTimeout = 30 * time.Second
 // expired refresh is never replaced with stale data, preserving Plex.tv as the
 // runtime authority for server connections.
 func (c *ResourceCache) Resources(ctx context.Context, client *Client, token string, ttl time.Duration) ([]Resource, error) {
+	return c.resources(ctx, client, token, ttl, false)
+}
+
+// Refresh bypasses a fresh cached snapshot while still joining an in-flight
+// same-key refresh. A successful result replaces the cached snapshot.
+func (c *ResourceCache) Refresh(ctx context.Context, client *Client, token string, ttl time.Duration) ([]Resource, error) {
+	return c.resources(ctx, client, token, ttl, true)
+}
+
+func (c *ResourceCache) resources(ctx context.Context, client *Client, token string, ttl time.Duration, forceRefresh bool) ([]Resource, error) {
 	if c == nil || ttl <= 0 {
 		return client.Resources(ctx, token)
 	}
@@ -176,7 +186,7 @@ func (c *ResourceCache) Resources(ctx context.Context, client *Client, token str
 	now := time.Now()
 	c.mu.Lock()
 	entry, ok := c.entries[key]
-	if ok && now.Sub(entry.at) < ttl {
+	if !forceRefresh && ok && now.Sub(entry.at) < ttl {
 		resources := cloneResources(entry.resources)
 		c.mu.Unlock()
 		return resources, nil

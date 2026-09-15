@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,8 +34,127 @@ func run(t *testing.T, args ...string) (string, error) {
 
 func TestServeHandlerEnablesBoundedResolutionRetry(t *testing.T) {
 	h := newServeMonitorHandler(&options{}, nil, nil)
-	if h.ResolveRetry != 1 || h.RetryDelay != time.Second || h.OnResolution == nil || h.Resolve == nil {
-		t.Fatalf("handler does not enable one delayed resolution retry")
+	if h.ResolveRetry != 1 || h.RetryDelay != time.Second || h.OnResolution == nil || h.Resolve == nil || h.RetryResolve == nil {
+		t.Fatalf("handler does not enable one delayed resolution retry with a fresh retry resolver")
+	}
+}
+
+type retryRecoveryDiscoveryTransport struct {
+	base        http.RoundTripper
+	upstreamURL string
+	calls       atomic.Int32
+}
+
+func (t *retryRecoveryDiscoveryTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.URL.Scheme == "https" && r.URL.Host == "plex.tv" && r.URL.Path == "/api/resources" {
+		call := t.calls.Add(1)
+		payload := `<MediaContainer><Device name="other" clientIdentifier="other" provides="server" owned="1"><Connection uri="http://other.invalid:32400" local="1"/></Device></MediaContainer>`
+		if call == 2 {
+			payload = fmt.Sprintf(`<MediaContainer><Device name="expected" clientIdentifier="machine" provides="server" owned="1"><Connection uri="%s" local="1" relay="0"/></Device></MediaContainer>`, t.upstreamURL)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(payload)),
+			Request:    r,
+		}, nil
+	}
+	return t.base.RoundTrip(r)
+}
+
+func TestServeHandlerRetriesWithFreshResourceDiscovery(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/identity":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"machineIdentifier":"machine"}}`))
+		case "/library/sections/all":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"size":1,"Directory":[{"key":"1","type":"movie"}]}}`))
+		case "/library/sections/1/all":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"Metadata":[{"key":"11"}]}}`))
+		case "/library/metadata/11":
+			_, _ = w.Write([]byte(`{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"key":"/library/parts/1/file.mkv"}]}]}]}}`))
+		case "/library/parts/1/file.mkv":
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(make([]byte, 1024))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	t.Setenv("PLEXCTL_TOKEN_ACCOUNT_TOKEN", "x")
+	oldTransport := http.DefaultTransport
+	transport := &retryRecoveryDiscoveryTransport{base: oldTransport, upstreamURL: upstream.URL}
+	http.DefaultTransport = transport
+	t.Cleanup(func() { http.DefaultTransport = oldTransport })
+
+	cfg := config.Config{Accounts: map[string]config.Account{
+		"account": {TokenKey: "account/token"},
+	}}
+	profile := config.ServerProfile{Account: "account", MachineIdentifier: "machine"}
+	resources := plexauth.NewResourceCache()
+	h := monitor.Handler{
+		ResolveRetry: 1,
+		RetryDelay:   0,
+		Resolve: func(ctx context.Context, account, server string) (monitor.ResolvedTarget, error) {
+			client, err := resolveFreshServeTarget(ctx, cfg, account, server, profile, resources, nil)
+			return monitor.ResolvedTarget{Client: client, CorrelationKey: "server"}, err
+		},
+		RetryResolve: func(ctx context.Context, account, server string) (monitor.ResolvedTarget, error) {
+			client, err := resolveFreshServeTargetWithRefresh(ctx, cfg, account, server, profile, resources, nil, true)
+			return monitor.ResolvedTarget{Client: client, CorrelationKey: "server"}, err
+		},
+	}
+
+	r := httptest.NewRecorder()
+	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/plex/account/server", nil))
+	if r.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s, want recovered 200 after retry", r.Code, r.Body)
+	}
+	if got := transport.calls.Load(); got != 2 {
+		t.Fatalf("Plex resource discovery calls=%d, want 2 after recovery", got)
+	}
+}
+
+func TestResolveFreshServeTargetWithRefreshKeepsValidatedConnectionCacheFirst(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/identity" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"MediaContainer":{"machineIdentifier":"machine"}}`))
+	}))
+	defer upstream.Close()
+
+	t.Setenv("PLEXCTL_TOKEN_ACCOUNT_TOKEN", "x")
+	oldTransport := http.DefaultTransport
+	transport := &retryRecoveryDiscoveryTransport{base: oldTransport}
+	http.DefaultTransport = transport
+	t.Cleanup(func() { http.DefaultTransport = oldTransport })
+
+	connections := connectioncache.New(filepath.Join(t.TempDir(), "connections.json"))
+	if err := connections.Put("account", "machine", plexauth.Connection{URI: upstream.URL, Local: true}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{Accounts: map[string]config.Account{
+		"account": {TokenKey: "account/token"},
+	}}
+	client, err := resolveFreshServeTargetWithRefresh(
+		context.Background(),
+		cfg,
+		"account",
+		"server",
+		config.ServerProfile{Account: "account", MachineIdentifier: "machine"},
+		plexauth.NewResourceCache(),
+		connections,
+		true,
+	)
+	if err != nil || client == nil {
+		t.Fatalf("client=%v err=%v, want validated cached connection", client, err)
+	}
+	if got := transport.calls.Load(); got != 0 {
+		t.Fatalf("Plex resource discovery calls=%d, want cache-first retry without discovery", got)
 	}
 }
 

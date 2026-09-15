@@ -1681,6 +1681,9 @@ func newServeMonitorHandler(o *options, resources *plexauth.ResourceCache, conne
 		Resolve: func(ctx context.Context, account, server string) (monitor.ResolvedTarget, error) {
 			return resolveServeMonitorTarget(ctx, account, server, resources, connections)
 		},
+		RetryResolve: func(ctx context.Context, account, server string) (monitor.ResolvedTarget, error) {
+			return resolveServeMonitorTargetWithRefresh(ctx, account, server, resources, connections, true)
+		},
 	}
 }
 
@@ -1699,6 +1702,10 @@ func resolveServeTargetCached(ctx context.Context, account, server string, resou
 // stable configured-profile key. The key keeps correlation aggregate-only even
 // when a single profile is reachable through several case-insensitive aliases.
 func resolveServeMonitorTarget(ctx context.Context, account, server string, resources *plexauth.ResourceCache, connections *connectioncache.Store) (monitor.ResolvedTarget, error) {
+	return resolveServeMonitorTargetWithRefresh(ctx, account, server, resources, connections, false)
+}
+
+func resolveServeMonitorTargetWithRefresh(ctx context.Context, account, server string, resources *plexauth.ResourceCache, connections *connectioncache.Store, forceResourceRefresh bool) (monitor.ResolvedTarget, error) {
 	c, err := config.Load(config.Path())
 	if err != nil {
 		return monitor.ResolvedTarget{}, err
@@ -1708,7 +1715,7 @@ func resolveServeMonitorTarget(ctx context.Context, account, server string, reso
 		return monitor.ResolvedTarget{}, err
 	}
 	target := monitor.ResolvedTarget{CorrelationKey: configuredKey}
-	target.Client, err = resolveFreshServeTarget(ctx, c, account, server, profile, resources, connections)
+	target.Client, err = resolveFreshServeTargetWithRefresh(ctx, c, account, server, profile, resources, connections, forceResourceRefresh)
 	return target, err
 }
 
@@ -1841,6 +1848,10 @@ func containsServeCandidate(candidates []plexauth.Connection, candidate plexauth
 // an endpoint validation failure, and a fresh discovery is persisted only once
 // the advertised connection has passed the same identity check.
 func resolveFreshServeTarget(ctx context.Context, c config.Config, account, requested string, profile config.ServerProfile, resourceCache *plexauth.ResourceCache, connections *connectioncache.Store) (*pms.Client, error) {
+	return resolveFreshServeTargetWithRefresh(ctx, c, account, requested, profile, resourceCache, connections, false)
+}
+
+func resolveFreshServeTargetWithRefresh(ctx context.Context, c config.Config, account, requested string, profile config.ServerProfile, resourceCache *plexauth.ResourceCache, connections *connectioncache.Store, forceResourceRefresh bool) (*pms.Client, error) {
 	a, ok := c.Accounts[account]
 	if !ok {
 		return nil, fmt.Errorf("account %q is not configured", account)
@@ -1849,13 +1860,21 @@ func resolveFreshServeTarget(ctx context.Context, c config.Config, account, requ
 	if err != nil {
 		return nil, err
 	}
+	// An identity-validated durable candidate remains authoritative on a retry;
+	// forceResourceRefresh only bypasses the Plex resource snapshot after this
+	// cache/profile check fails.
 	if cached, ok, err := resolveCachedServeTarget(ctx, connections, account, profile, accountToken); err != nil {
 		return nil, fmt.Errorf("read cached connection for %s/%s: %w", account, requested, err)
 	} else if ok {
 		return cached, nil
 	}
 	plex := plexauth.New("https://plex.tv", "plexctl", nil)
-	resources, err := resourceCache.Resources(ctx, plex, accountToken, plexResourceCacheTTL)
+	var resources []plexauth.Resource
+	if forceResourceRefresh {
+		resources, err = resourceCache.Refresh(ctx, plex, accountToken, plexResourceCacheTTL)
+	} else {
+		resources, err = resourceCache.Resources(ctx, plex, accountToken, plexResourceCacheTTL)
+	}
 	if err != nil {
 		return nil, discoveryErrorFrom("refresh Plex connections", err)
 	}
