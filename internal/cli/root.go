@@ -1857,7 +1857,7 @@ func resolveFreshServeTarget(ctx context.Context, c config.Config, account, requ
 	plex := plexauth.New("https://plex.tv", "plexctl", nil)
 	resources, err := resourceCache.Resources(ctx, plex, accountToken, plexResourceCacheTTL)
 	if err != nil {
-		return nil, discoveryError("refresh Plex connections")
+		return nil, discoveryErrorFrom("refresh Plex connections", err)
 	}
 	var matches []plexauth.Resource
 	matches = matchingServeResources(resources, profile, requested)
@@ -1874,7 +1874,7 @@ func resolveFreshServeTarget(ctx context.Context, c config.Config, account, requ
 	}
 	connection, err := validatedConnection(ctx, matches[0], accountToken)
 	if err != nil {
-		return nil, discoveryError("advertised connection did not validate")
+		return nil, discoveryErrorFrom("advertised connection did not validate", err)
 	}
 	normalized := normalizeDiscoveredConnection(connection)
 	if connections != nil && profile.MachineIdentifier != "" {
@@ -1891,6 +1891,20 @@ func resolveFreshServeTarget(ctx context.Context, c config.Config, account, requ
 
 func discoveryError(reason string) error {
 	return fmt.Errorf("%w: %s", monitor.ErrDiscoveryUnavailable, reason)
+}
+
+// discoveryErrorFrom preserves terminal context causes so the monitor can avoid
+// retrying work that already exceeded its detached resolution budget. Other
+// upstream failures remain intentionally hidden behind the safe classification.
+func discoveryErrorFrom(reason string, cause error) error {
+	classified := discoveryError(reason)
+	if errors.Is(cause, context.Canceled) {
+		return errors.Join(classified, context.Canceled)
+	}
+	if errors.Is(cause, context.DeadlineExceeded) {
+		return errors.Join(classified, context.DeadlineExceeded)
+	}
+	return classified
 }
 
 func matchingServeResources(resources []plexauth.Resource, profile config.ServerProfile, requested string) []plexauth.Resource {

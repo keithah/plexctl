@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -489,6 +490,80 @@ func TestResolveCachedServeTargetUsesOlderValidatedCandidate(t *testing.T) {
 func TestDiscoveryErrorUsesUnavailableSentinel(t *testing.T) {
 	if !errors.Is(discoveryError("ambiguous advertised server"), monitor.ErrDiscoveryUnavailable) {
 		t.Fatal("discovery error must map to monitor discovery unavailability")
+	}
+}
+
+type terminalDiscoveryRoundTripper struct{}
+
+func (terminalDiscoveryRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, context.DeadlineExceeded
+}
+
+func terminalFreshDiscoveryError(t *testing.T) error {
+	t.Helper()
+	oldTransport := http.DefaultTransport
+	http.DefaultTransport = terminalDiscoveryRoundTripper{}
+	t.Cleanup(func() { http.DefaultTransport = oldTransport })
+	t.Setenv("PLEXCTL_TOKEN_ACCOUNT_TOKEN", "x")
+
+	cfg := config.Config{Accounts: map[string]config.Account{
+		"account": {TokenKey: "account/token"},
+	}}
+	_, err := resolveFreshServeTarget(
+		context.Background(),
+		cfg,
+		"account",
+		"server",
+		config.ServerProfile{Account: "account", MachineIdentifier: "machine"},
+		plexauth.NewResourceCache(),
+		nil,
+	)
+	if err == nil {
+		t.Fatal("resolveFreshServeTarget unexpectedly succeeded")
+	}
+	return err
+}
+
+func TestResolveFreshServeTargetPreservesTerminalDiscoveryCause(t *testing.T) {
+	err := terminalFreshDiscoveryError(t)
+	if !errors.Is(err, monitor.ErrDiscoveryUnavailable) {
+		t.Fatalf("error=%v, want discovery classification", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error=%v, want preserved terminal discovery cause", err)
+	}
+}
+
+func TestDiscoveryErrorFromHidesTerminalCauseDetail(t *testing.T) {
+	privateDetail := "https://private.example/?token=secret"
+	cause := fmt.Errorf("upstream failed at %s: %w", privateDetail, context.DeadlineExceeded)
+	err := discoveryErrorFrom("refresh Plex connections", cause)
+	if !errors.Is(err, monitor.ErrDiscoveryUnavailable) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error=%v, want safe discovery classification with terminal cause", err)
+	}
+	if strings.Contains(err.Error(), privateDetail) {
+		t.Fatalf("error leaked terminal-cause detail: %q", err)
+	}
+}
+
+func TestServeHandlerDoesNotRetryTerminalFreshDiscoveryFailure(t *testing.T) {
+	err := terminalFreshDiscoveryError(t)
+	attempts := 0
+	h := monitor.Handler{
+		ResolveRetry: 1,
+		RetryDelay:   0,
+		Resolve: func(context.Context, string, string) (monitor.ResolvedTarget, error) {
+			attempts++
+			return monitor.ResolvedTarget{CorrelationKey: "probe"}, err
+		},
+	}
+	r := httptest.NewRecorder()
+	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/plex/account/server", nil))
+	if r.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d, want terminal discovery failure", r.Code)
+	}
+	if attempts != 1 {
+		t.Fatalf("resolve attempts=%d, want no retry for terminal fresh discovery failure", attempts)
 	}
 }
 

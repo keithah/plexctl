@@ -61,7 +61,7 @@ normal certificate verification.
 - `history report --mode MODE [--section KEY] [--account-id ID] [--older-than DURATION] [--output FILE]` — analyze watch history without changing Plex.
 `health ping` — bounded identity liveness check.
 `health check` — identity plus library-access check with bounded media-byte verification (Range bytes=0-1024, download=1).
-`serve --listen ADDR` — local HTTP adapter for Uptime Kuma (`GET /plex/<account>/<server>` → 200/503 JSON with classification; defaults to `127.0.0.1:3002`).
+`serve --listen ADDR` — local HTTP adapter for Uptime Kuma (`GET /plex/<account>/<server>` returns `200` when healthy, `503` for health/discovery/dependency failures, `404` for request/configuration failures, `405` for non-`GET` methods, and `500` only for invalid handler state; defaults to `127.0.0.1:3002`).
 - `api GET /path` — read-only access to any PMS endpoint.
 
 ### Watch-history reports
